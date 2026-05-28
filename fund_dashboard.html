@@ -1,0 +1,1101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>基金表现统计看板</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --card: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --muted: #8b949e;
+  --red: #f85149;
+  --green: #3fb950;
+  --red-bg: rgba(248,81,73,0.12);
+  --green-bg: rgba(63,185,80,0.12);
+  --blue: #58a6ff;
+  --hover: rgba(31,39,51,0.8);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 13px;
+}
+.header {
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  padding: 14px 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.header h1 { font-size: 17px; font-weight: 600; }
+.header-sub { font-size: 11px; color: var(--muted); }
+.actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.btn {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: #21262d;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.btn:hover { border-color: var(--blue); background: rgba(88,166,255,0.08); }
+.btn.primary { background: #1f6feb; border-color: #1f6feb; }
+.btn.primary:hover { background: #388bfd; border-color: #388bfd; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.spin { display: inline-block; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); display: inline-block; }
+.dot.ok { background: var(--green); }
+.dot.err { background: var(--red); }
+.dot.loading { background: #f0883e; animation: pulse 1s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+.main { padding: 14px 16px; overflow-x: auto; }
+.cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-bottom: 14px;
+  min-width: 700px;
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.card-label { font-size: 11px; color: var(--muted); margin-bottom: 5px; }
+.card-val { font-size: 20px; font-weight: 700; }
+.card-sub { font-size: 11px; color: var(--muted); margin-top: 3px; }
+
+.table-wrap {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: auto;
+}
+.table-caption {
+  padding: 8px 14px;
+  font-size: 11px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  background: rgba(88,166,255,0.03);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  white-space: nowrap;
+}
+thead th {
+  background: #1c2128;
+  color: var(--muted);
+  font-weight: 500;
+  padding: 8px 10px;
+  text-align: center;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+th.name-col {
+  text-align: left;
+  min-width: 200px;
+  position: sticky;
+  left: 0;
+  z-index: 20;
+  background: #1c2128;
+  border-right: 1px solid var(--border);
+}
+th.today { background: #1a2535; color: var(--blue); }
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { background: #252d3a; color: #c9d1d9; }
+th.sort-asc, th.sort-desc { color: var(--blue); }
+th.sort-asc::after { content: " ▲"; font-size: 9px; }
+th.sort-desc::after { content: " ▼"; font-size: 9px; }
+th.fixed-th { position: sticky; z-index: 11; background: #1c2128; }
+th.fixed-th.name-col { z-index: 21; }
+.sort-reset { cursor: pointer; font-size: 11px; color: var(--muted); margin-left: 8px; }
+.sort-reset:hover { color: var(--text); }
+tbody tr { border-bottom: 1px solid rgba(48,54,61,0.5); }
+tbody tr:hover { background: var(--hover); }
+tbody tr:last-child { border-bottom: none; }
+td {
+  padding: 8px 10px;
+  text-align: center;
+  vertical-align: middle;
+}
+td.name-col {
+  text-align: left;
+  position: sticky;
+  left: 0;
+  background: var(--card);
+  z-index: 5;
+  border-right: 1px solid var(--border);
+}
+tbody tr:hover td.name-col { background: rgba(22,27,34,0.95); }
+.fname { font-weight: 500; }
+.fcode { display: inline-block; font-size: 10px; color: var(--muted); background: #21262d; padding: 1px 5px; border-radius: 3px; margin-top: 2px; }
+.tag {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+.tag-blue { background: rgba(88,166,255,0.12); color: var(--blue); }
+.tag-orange { background: rgba(240,136,62,0.12); color: #f0883e; }
+.tag-red { background: var(--red-bg); color: var(--red); }
+
+.pct {
+  display: inline-block;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 11.5px;
+  min-width: 52px;
+  text-align: center;
+}
+.up { color: var(--red); background: var(--red-bg); }
+.dn { color: var(--green); background: var(--green-bg); }
+.zero { color: var(--muted); }
+.na { color: var(--muted); font-style: italic; font-weight: 400; background: none; }
+.total-up { color: var(--red); font-weight: 700; font-size: 13px; }
+.total-dn { color: var(--green); font-weight: 700; font-size: 13px; }
+
+/* 模型评估列样式 */
+.model-good { color: var(--red); font-weight: 700; }
+.model-mid  { color: #f0883e; font-weight: 600; }
+.model-bad  { color: var(--green); font-weight: 600; }
+th.model-col { font-size: 11px; cursor: help; }
+th.model-col:hover { color: var(--blue); }
+.model-wrap { display: inline-block; text-align: center; min-width: 52px; }
+.model-sub { font-size: 9px; color: var(--muted); font-weight: 400; display: block; line-height: 1; margin-top: 1px; }
+
+td.today-td { background: rgba(88,166,255,0.04); }
+
+.bar-wrap { display: flex; align-items: center; gap: 5px; justify-content: center; }
+.bar { flex: 1; max-width: 55px; height: 4px; background: rgba(255,255,255,0.07); border-radius: 2px; overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 2px; }
+.bar-num { font-size: 11px; color: var(--text); min-width: 26px; text-align: right; }
+
+.toast {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  background: #21262d;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-size: 12px;
+  z-index: 999;
+  display: none;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  max-width: 340px;
+}
+.toast.show { display: block; animation: toastIn 0.25s ease; }
+.toast.ok { border-color: var(--green); }
+.toast.err { border-color: var(--red); }
+@keyframes toastIn { from{transform:translateY(8px);opacity:0} to{transform:translateY(0);opacity:1} }
+
+.progress-overlay {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #21262d;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 20px;
+  font-size: 12px;
+  z-index: 998;
+  display: none;
+  min-width: 260px;
+  text-align: center;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+.progress-overlay.show { display: block; }
+.prog-bar-outer { background: rgba(255,255,255,0.08); border-radius: 4px; height: 4px; margin-top: 8px; overflow: hidden; }
+.prog-bar-inner { height: 100%; background: var(--blue); border-radius: 4px; transition: width 0.3s; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>📊 基金表现统计看板</h1>
+    <div class="header-sub" id="headerSub">数据来源：天天基金 · 涨跌幅单位：%</div>
+  </div>
+  <div class="actions">
+    <span id="updateTime" style="font-size:11px;color:var(--muted)">—</span>
+    <span class="dot" id="statusDot"></span>
+    <button class="btn" onclick="fetchAllHistory()">📅 补全历史数据</button>
+    <button class="btn primary" id="fetchTodayBtn" onclick="fetchTodayData()">⟳ 获取今日涨跌幅</button>
+  </div>
+</div>
+
+<div class="main">
+  <div class="cards" id="cards"></div>
+  <div class="table-wrap">
+    <div class="table-caption">
+      <span>📋 持仓基金列表 · 共 <b id="cnt">0</b> 支</span>
+      <span id="sortInfo" style="margin-left:12px;font-size:10px;color:var(--muted)"></span>
+      <span style="margin-left:auto" id="sortResetWrap" class="sort-reset" onclick="resetSort()" title="恢复默认排序">↺ 默认排序</span>
+      <span style="margin-left:8px;margin-right:0">收益能力/防守能力：越高越好（满分100）</span>
+    </div>
+    <table>
+      <thead id="thead"></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<div class="progress-overlay" id="progOverlay">
+  <div id="progText">正在获取数据...</div>
+  <div class="prog-bar-outer"><div class="prog-bar-inner" id="progBar" style="width:0%"></div></div>
+</div>
+
+<script>
+// ============================================================
+// 基础数据（来自Excel）
+// ============================================================
+const DATES = ["4/27","4/28","4/29","4/30","5/06","5/07","5/08","5/11","5/12","5/13","5/14","5/15","5/18","5/19","5/20","5/21","5/22","5/25","5/26","5/27","5/28","5/29"];
+
+// sNav: 4/27单位净值（计算总收益率起点）
+// latestNav: 最新已知净值（由历史API更新）
+// dr: 每日涨跌幅，索引对应DATES数组
+const FUNDS = [
+  {seq:1, name:"易方达科融混合", code:"006533", buy:88.4, def:66.29, tag:null, sNav:7.8347, latestNav:null, ret:null, days:18, sumR:11.03, up:12, dn:6, avg:0.613, dr:[0.68,-1.21,0.87,-0.01,2.11,2.22,-0.19,2.18,0.84,2.21,-0.94,-1.49,0.18,0.62,1.13,-2.8,2.52,2.11,0.38,-0.24,null,null]},
+  {seq:2, name:"摩根双核平衡混合A", code:"373020", buy:76.42, def:73.58, tag:"压舱石", sNav:2.1742, latestNav:null, ret:null, days:18, sumR:9.67, up:11, dn:7, avg:0.537, dr:[-0.34,-0.17,1.12,-0.12,1.92,2.13,-0.36,1.87,0.92,1.54,-1.37,-1.82,0.55,0.67,1.04,-2.52,2.96,1.65,0.19,-0.36,null,null]},
+  {seq:3, name:"华泰柏瑞质量成长混合C", code:"011452", buy:90.69, def:37.53, tag:null, sNav:2.8151, latestNav:null, ret:null, days:18, sumR:16.23, up:12, dn:6, avg:0.902, dr:[0.77,-1.68,0.81,-0.85,2.81,5.57,0.89,2.37,2.42,1.85,-0.94,-3.84,1.05,-0.51,1.08,-5.05,5.72,3.76,-0.90,-0.15,null,null]},
+  {seq:4, name:"银河创新成长混合C", code:"014143", buy:57.89, def:29.11, tag:null, sNav:9.7666, latestNav:null, ret:null, days:18, sumR:28.79, up:13, dn:5, avg:1.599, dr:[3.6,-1.33,-0.96,6.58,6.34,2.39,-3.09,5.87,0.47,2.22,-2.54,-0.65,0.53,3.04,6.37,-4.44,2.6,7.81,-1.00,-1.81,null,null]},
+  {seq:5, name:"国泰中证全指通信设备ETF联接A", code:"007817", buy:null, def:null, tag:"波动较大", sNav:3.7894, latestNav:null, ret:null, days:18, sumR:14.52, up:13, dn:5, avg:0.807, dr:[0.96,-1.81,-0.12,-0.4,2.17,4.17,1.06,3.45,1.42,3.17,-0.69,-0.25,1.14,-0.5,0.49,-4.8,4.29,3.64,-0.82,-0.46,null,null]},
+  {seq:6, name:"易方达瑞享灵活配置混合E", code:"001438", buy:88.59, def:40.26, tag:null, sNav:8.3594, latestNav:null, ret:null, days:18, sumR:15.41, up:13, dn:5, avg:0.856, dr:[0.92,-1.64,0.97,0.92,2.03,5.69,0.34,3.18,2.24,3.3,-1.79,-2.99,1.26,-1.12,2.13,-4.74,4.01,3.03,-2.25,1.20,null,null]},
+  {seq:7, name:"华商致远回报混合A", code:"024459", buy:null, def:null, tag:null, sNav:2.773, latestNav:null, ret:null, days:18, sumR:13.61, up:13, dn:5, avg:0.756, dr:[0.48,-1.8,1.08,-0.83,3.15,4.56,1.42,2.85,2.36,1.71,-1.57,-3.81,0.8,-0.05,1.18,-4.64,6.18,3.28,-0.86,0.22,null,null]},
+  {seq:8, name:"财通集成电路产业股票C", code:"006503", buy:90.47, def:38.63, tag:null, sNav:5.3676, latestNav:null, ret:null, days:18, sumR:23.26, up:13, dn:5, avg:1.292, dr:[2.19,-2.14,1.09,1.16,1.45,2.62,-0.68,2.51,3.38,3.31,-3.76,-0.68,1.14,0.81,1.49,-0.98,9.55,3.86,1.16,2.55,null,null]},
+  {seq:9, name:"信澳业绩驱动混合C", code:"016371", buy:90.17, def:36.72, tag:null, sNav:2.5499, latestNav:null, ret:null, days:18, sumR:16.2, up:12, dn:6, avg:0.9, dr:[0.12,-1.85,0.52,0.46,1.99,6.81,0.74,2.49,2.21,2.36,-0.18,-2.56,-0.1,-1.7,1.39,-5.7,5.66,4.16,-1.06,0.35,null,null]},
+  {seq:10, name:"宝盈国家安全战略沪港深股票C", code:"013613", buy:88.24, def:54.05, tag:null, sNav:3.3182, latestNav:null, ret:null, days:18, sumR:22.49, up:13, dn:5, avg:1.249, dr:[1.47,-0.9,0.12,1.63,3.37,5.06,0.23,3.38,1.94,2.49,-0.7,-2.92,2.3,0.61,3.46,-5.29,4.94,2.07,-2.40,-0.99,null,null]},
+  {seq:11, name:"华商均衡成长混合C", code:"011370", buy:93.63, def:52.95, tag:null, sNav:3.1014, latestNav:null, ret:null, days:18, sumR:17.33, up:13, dn:5, avg:0.963, dr:[0.27,-1.4,1.03,0,3.08,4.5,1.19,2.56,1.87,2.24,-1.55,-3.22,1.05,0.64,1.27,-4.33,6.32,3.46,-0.63,0.27,null,null]},
+  {seq:12, name:"中航机遇领航混合C", code:"018957", buy:87.54, def:39, tag:null, sNav:4.6017, latestNav:null, ret:null, days:18, sumR:16.66, up:12, dn:6, avg:0.926, dr:[0.2,-2.87,0.42,-0.82,2.31,4.56,2.44,1.45,1.96,3.71,0.62,-1.97,-0.42,-1.48,1.07,-5.07,5.68,4.56,-0.31,0.24,null,null]},
+  {seq:13, name:"长安宏观策略混合C", code:"016579", buy:85.59, def:31.79, tag:null, sNav:3.459, latestNav:null, ret:null, days:18, sumR:16.82, up:13, dn:5, avg:0.934, dr:[0.55,-1.24,1.14,1.51,3.19,4.17,-0.13,2.74,1.86,1.75,-1.67,-3.09,-0.05,0.55,1.93,-5.01,4.06,4.47,-1.09,-0.95,null,null]},
+  {seq:14, name:"平安科技精选混合A", code:"026210", buy:null, def:null, tag:"不满1年", sNav:1.686, latestNav:null, ret:null, days:18, sumR:14.37, up:12, dn:6, avg:0.798, dr:[-0.17,-2.35,1.85,-0.16,3.53,5.32,1.44,2.58,2.38,1.27,-1.68,-3.37,1.69,-0.58,1.19,-4.9,5.67,2.06,-2.57,-1.71,null,null]},
+  {seq:15, name:"易方达环保主题灵活配置混合C", code:"019032", buy:87.59, def:60.21, tag:null, sNav:6.945, latestNav:null, ret:null, days:18, sumR:15.58, up:13, dn:5, avg:0.866, dr:[0.62,-0.72,1.39,-0.27,3.18,1.7,-0.07,2.28,0.71,2.79,-0.81,-2.08,1.25,0.88,0.83,-2.96,4.59,2.19,-0.04,-0.21,null,null]},
+  {seq:16, name:"弘毅远方甄选混合C", code:"015401", buy:48.5, def:24.15, tag:null, sNav:1.1831, latestNav:null, ret:null, days:18, sumR:21.03, up:14, dn:4, avg:1.168, dr:[1.37,-1.68,0.65,3.29,1.94,4.91,2.85,0.03,0.05,0.41,-2.72,3.85,1.82,0.62,1,-2.88,0.56,-0.12,0.23,-3.99,null,null]},
+  {seq:17, name:"大摩数字经济混合A", code:"017102", buy:87.04, def:38.63, tag:null, sNav:3.5668, latestNav:null, ret:null, days:18, sumR:20.23, up:13, dn:5, avg:1.124, dr:[1.52,-1.35,0.95,0.59,2.75,3.72,-0.36,3.23,1.5,2.9,-1.87,-1.88,1.67,0.33,0.92,-3.71,5.41,4.02,1.10,-0.74,null,null]},
+  {seq:18, name:"天弘全球高端制造混合C", code:"016665", buy:null, def:null, tag:null, sNav:2.7229, latestNav:null, ret:null, days:17, sumR:17.26, up:11, dn:6, avg:1.015, dr:[0.59,-2.18,1.05,1.25,7.27,2.42,1.46,4.99,-0.88,3.9,-1.23,-4.73,-0.28,-0.83,1.51,0.74,3.4,null,0.94,null,null,null]},
+  {seq:19, name:"东方人工智能主题汇合C", code:"017811", buy:75.59, def:40.71, tag:null, sNav:2.0518, latestNav:null, ret:null, days:18, sumR:45.57, up:15, dn:3, avg:2.532, dr:[8.21,-1.05,0.8,5.56,0.61,2.36,-2.87,5.16,5.3,3.06,-2.26,6.13,1.49,4.9,6.61,-4.68,0.64,7.25,-1.88,-4.18,null,null]},
+  {seq:20, name:"景顺长城研究精选股票A", code:"000688", buy:80.96, def:49.81, tag:null, sNav:3.525, latestNav:null, ret:null, days:18, sumR:20.54, up:13, dn:5, avg:1.141, dr:[1.7,-1.59,0.37,1.38,2.89,5.09,-0.39,2.08,1.65,2.97,-1.55,-2.33,1.82,0.98,2.12,-3.58,4.25,4.54,-0.42,-0.93,null,null]},
+  {seq:22, name:"国富创新科技混合A", code:"002692", buy:92, def:41.68, tag:null, sNav:4.364, latestNav:null, ret:null, days:18, sumR:17.01, up:13, dn:5, avg:0.945, dr:[1.37,-2.52,0.33,-0.37,2.54,5.6,0.48,1.79,1.25,2.35,-1.09,-3.85,1.49,0.81,1.24,-4.14,6.1,4.44,-0.31,-1.83,null,null]},
+  {seq:23, name:"德邦鑫星价值灵活配置混合A", code:"001412", buy:87.81, def:22.95, tag:null, sNav:5.1369, latestNav:null, ret:null, days:18, sumR:22.06, up:13, dn:5, avg:1.225, dr:[0.67,-1.48,1.13,0.35,0.37,6.09,0.67,3.33,2.24,3.94,-1.88,-2.1,0.26,-1.63,0.92,-4.25,6.41,5.51,0.31,-1.09,null,null]},
+  {seq:24, name:"前海开源沪港深乐享生活灵活配置混合", code:"004320", buy:92.45, def:46.09, tag:null, sNav:5.5573, latestNav:null, ret:null, days:18, sumR:18.28, up:13, dn:5, avg:1.016, dr:[0.86,-2.36,0.58,1.14,2.2,5.05,3.33,3.37,1.26,3,-0.96,-2.69,0.55,-0.4,1.38,-6.11,5.42,3.8,-1.19,-0.16,null,null]}
+];
+
+// ============================================================
+// 工具函数
+// ============================================================
+function todayKey() {
+  const d = new Date();
+  return `${d.getMonth()+1}/${String(d.getDate()).padStart(2,'0')}`;
+}
+function normDate(s) {
+  if (!s) return '';
+  const [m,day] = s.split('/');
+  return `${parseInt(m)}/${String(parseInt(day)).padStart(2,'0')}`;
+}
+function fmtDate(s) {
+  const [m,day] = s.split('/');
+  return `${parseInt(m)}/${parseInt(day)}`;
+}
+
+function getCache() {
+  try { return JSON.parse(localStorage.getItem('fund_cache_v2') || '{}'); } catch { return {}; }
+}
+function setCache(c) { localStorage.setItem('fund_cache_v2', JSON.stringify(c)); }
+
+function cacheKey(code, date) { return `${code}__${normDate(date)}`; }
+
+// ============================================================
+// 净值缓存（用于动态计算总收益率）
+// key: "nav_{code}__{YYYY-MM-DD}"
+// ============================================================
+function navCacheKey(code, isoDate) { return `nav_${code}__${isoDate}`; }
+
+function getNavCache() {
+  try { return JSON.parse(localStorage.getItem('fund_nav_cache_v1') || '{}'); } catch { return {}; }
+}
+function setNavCache(c) { localStorage.setItem('fund_nav_cache_v1', JSON.stringify(c)); }
+
+// 从净值缓存中取最新净值（取最近日期）
+function getLatestNavFromCache(code) {
+  const nc = getNavCache();
+  // 找所有该基金的净值条目
+  const prefix = `nav_${code}__`;
+  const entries = Object.keys(nc)
+    .filter(k => k.startsWith(prefix))
+    .map(k => ({ date: k.replace(prefix, ''), nav: nc[k] }))
+    .sort((a, b) => b.date.localeCompare(a.date)); // 降序
+  return entries.length > 0 ? entries[0] : null;
+}
+
+// 计算总收益率：(latestNav / sNav - 1) * 100
+function calcRet(f) {
+  const entry = getLatestNavFromCache(f.code);
+  if (!entry) return null;
+  return (entry.nav / f.sNav - 1) * 100;
+}
+
+// Init cache from excel data
+function initCache() {
+  const cache = getCache();
+  FUNDS.forEach(f => {
+    DATES.forEach((d, i) => {
+      const v = f.dr[i];
+      if (v !== null && v !== undefined) {
+        const k = cacheKey(f.code, d);
+        if (cache[k] === undefined) cache[k] = v;
+      }
+    });
+  });
+  setCache(cache);
+}
+
+// Get value for a fund on a date
+function getVal(code, date) {
+  const cache = getCache();
+  return cache[cacheKey(code, date)] ?? null;
+}
+
+// ============================================================
+// 基金评估模型指标计算
+// 每日自动更新，无需额外 API 调用
+// ============================================================
+const RISK_FREE = 0.015; // 无风险利率 1.5%（中国1年期国债估算）
+
+// 获取日收益率数组（小数形式）
+function getDailyReturns(code, cache) {
+  const fund = FUNDS.find(f => f.code === code);
+  const returns = [];
+  DATES.forEach((d, i) => {
+    let v = cache ? cache[cacheKey(code, d)] : getVal(code, d);
+    if (v === null && fund) v = fund.dr[i];
+    if (v != null) returns.push(v / 100);
+  });
+  return returns;
+}
+
+// 获取净值时间序列（从4/27起点开始）
+// 优先从净值缓存取，不足时从日收益率重建
+function getNavSeries(f, navCache, cache) {
+  const nc = navCache || getNavCache();
+  const prefix = `nav_${f.code}__`;
+  let series = Object.keys(nc)
+    .filter(k => k.startsWith(prefix))
+    .map(k => ({ date: k.replace(prefix, ''), nav: nc[k] }))
+    .filter(e => e.date >= '2026-04-27')
+    .sort((a, b) => a.date.localeCompare(b.date));
+  // 确保起点为4/27的sNav
+  if (series.length === 0 || series[0].date > '2026-04-27') {
+    series.unshift({ date: '2026-04-27', nav: f.sNav });
+  }
+  // 净值缓存不足（<2条），从日收益率重建
+  if (series.length < 2) {
+    const c = cache || getCache();
+    series = [{ date: '2026-04-27', nav: f.sNav }];
+    let nav = f.sNav;
+    DATES.forEach((d, i) => {
+      let v = c[cacheKey(f.code, d)];
+      if (v === undefined) v = f.dr[i];
+      if (v != null) {
+        nav = nav * (1 + v / 100);
+        const [m, day] = d.split('/');
+        const iso = `2026-${String(parseInt(m)).padStart(2,'0')}-${String(parseInt(day)).padStart(2,'0')}`;
+        series.push({ date: iso, nav: parseFloat(nav.toFixed(4)) });
+      }
+    });
+  }
+  return series;
+}
+
+// 1. 年化波动率 = stdev(daily) × √252
+function calcVolatility(code, cache) {
+  const returns = getDailyReturns(code, cache);
+  if (returns.length < 5) return null;
+  const mean = returns.reduce((a,b)=>a+b,0) / returns.length;
+  const sumSq = returns.reduce((s,r)=>s + (r-mean)*(r-mean), 0);
+  const stdev = Math.sqrt(sumSq / (returns.length - 1));
+  return stdev * Math.sqrt(252) * 100;
+}
+
+// 2. 最大回撤 = 从峰值到谷底的最大跌幅
+function calcMaxDrawdown(f, navCache, cache) {
+  const series = getNavSeries(f, navCache, cache);
+  if (series.length < 2) return null;
+  let peak = series[0].nav;
+  let maxDD = 0;
+  for (let i = 1; i < series.length; i++) {
+    if (series[i].nav > peak) peak = series[i].nav;
+    const dd = (series[i].nav - peak) / peak;
+    if (dd < maxDD) maxDD = dd;
+  }
+  return maxDD * 100;
+}
+
+// 3. 夏普比率 = (年化收益率 - Rf) / 年化波动率
+function calcSharpe(code, cache) {
+  const returns = getDailyReturns(code, cache);
+  if (returns.length < 5) return null;
+  let cumulative = 1;
+  returns.forEach(r => cumulative *= (1 + r));
+  const days = returns.length;
+  const annualReturn = Math.pow(cumulative, 252 / days) - 1;
+  const mean = returns.reduce((a,b)=>a+b,0) / returns.length;
+  const sumSq = returns.reduce((s,r)=>s + (r-mean)*(r-mean), 0);
+  const annualVol = Math.sqrt(sumSq / (returns.length - 1)) * Math.sqrt(252);
+  if (annualVol === 0) return null;
+  return (annualReturn - RISK_FREE) / annualVol;
+}
+
+// 4. 胜率 = 盈利天数占比
+function calcWinRate(code, cache) {
+  const returns = getDailyReturns(code, cache);
+  if (returns.length === 0) return null;
+  const up = returns.filter(r => r > 0).length;
+  return (up / returns.length) * 100;
+}
+
+// 5. 修复天数 = 最大回撤后净值恢复到前高所需交易日数
+// 返回 null 无数据 / 数字 已恢复 / 负数 未恢复(取绝对值=距谷底天数)
+function calcRecoveryDays(f, navCache, cache) {
+  const series = getNavSeries(f, navCache, cache);
+  if (series.length < 3) return null;
+  
+  let peak = series[0].nav;
+  let maxDD = 0, troughIdx = 0, peakAtTrough = series[0].nav;
+  
+  for (let i = 1; i < series.length; i++) {
+    if (series[i].nav > peak) peak = series[i].nav;
+    const dd = (series[i].nav - peak) / peak;
+    if (dd < maxDD) {
+      maxDD = dd;
+      troughIdx = i;
+      peakAtTrough = peak;
+    }
+  }
+  
+  // 已从谷底完全恢复
+  for (let i = troughIdx + 1; i < series.length; i++) {
+    if (series[i].nav >= peakAtTrough) {
+      return i - troughIdx;
+    }
+  }
+  
+  // 尚未恢复：返回负值（绝对值=距谷底天数），方便展示时区分
+  return -(series.length - 1 - troughIdx);
+}
+
+// ============================================================
+// JSONP / API (串行，避免 jsonpgz 函数名冲突)
+// ============================================================
+const _q = [];
+let _qRunning = false;
+
+function jsonpFetch(url) {
+  return new Promise((res, rej) => {
+    const script = document.createElement('script');
+    const prev = window.jsonpgz;
+    let done = false;
+    window.jsonpgz = (data) => {
+      done = true;
+      window.jsonpgz = prev;
+      try { document.head.removeChild(script); } catch(e){}
+      res(data);
+    };
+    script.onerror = () => {
+      window.jsonpgz = prev;
+      try { document.head.removeChild(script); } catch(e){}
+      rej(new Error('JSONP error'));
+    };
+    script.src = url;
+    document.head.appendChild(script);
+    setTimeout(() => {
+      if (!done) { window.jsonpgz = prev; try{document.head.removeChild(script);}catch(e){} rej(new Error('timeout')); }
+    }, 6000);
+  });
+}
+
+async function fetchEstimate(code) {
+  return new Promise(r => {
+    _q.push({ code, resolve: r });
+    if (!_qRunning) _runQ();
+  });
+}
+async function _runQ() {
+  _qRunning = true;
+  while (_q.length > 0) {
+    const { code, resolve } = _q.shift();
+    try {
+      const url = `https://fundgz.1234567.com.cn/js/${code}.js?rt=${Date.now()}`;
+      const d = await jsonpFetch(url);
+      resolve(d);
+    } catch(e) { resolve(null); }
+    await sleep(100);
+  }
+  _qRunning = false;
+}
+
+async function fetchHistory(code, startDate, endDate) {
+  try {
+    const url = `https://api.fund.eastmoney.com/f10/lsjz?fundCode=${code}&pageIndex=1&pageSize=50&startDate=${startDate}&endDate=${endDate}&_=${Date.now()}`;
+    const resp = await fetch(url, { headers:{ 'Referer':'https://fund.eastmoney.com/' } });
+    const data = await resp.json();
+    return data?.Data?.LSJZList || null;
+  } catch { return null; }
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ============================================================
+// 渲染
+// ============================================================
+let displayDates = [];
+let sortCol = 'upDays';    // 当前排序列（默认：盈利天数降序）
+let sortDir = 'desc';    // 排序方向: asc / desc
+
+// 计算某基金从4/27到当天的盈利天数/亏损天数
+function calcUpDownDays(f) {
+  const cache = getCache();
+  const today = todayKey();
+  let up = 0, dn = 0;
+  DATES.forEach((d, i) => {
+    // 只计算到今天（含）
+    if (normDate(d) > normDate(today)) return;
+    // 优先从缓存取，其次从dr数组
+    let v = cache[cacheKey(f.code, d)];
+    if (v === undefined) v = f.dr[i];
+    if (v == null) return;  // 跳过无数据日期
+    if (v > 0) up++;
+    else if (v < 0) dn++;
+  });
+  return { up, dn };
+}
+
+// 对基金列表排序
+function getSortedFunds() {
+  const list = [...FUNDS];
+  const cache = getCache();
+  const today = todayKey();
+  
+  const valFn = (f) => {
+    switch (sortCol) {
+      case 'seq': return f.seq;
+      case 'name': return f.name;
+      case 'code': return f.code;
+      case 'ret': {
+        const dynRet = calcRet(f);
+        return dynRet !== null ? dynRet : (f.sumR || 0);
+      }
+      case 'sharpe': return calcSharpe(f.code, cache) ?? null;
+      case 'maxdd': return calcMaxDrawdown(f, getNavCache(), cache) ?? null;
+      case 'recovery': return calcRecoveryDays(f, getNavCache(), cache) ?? null;
+      case 'vol': return calcVolatility(f.code, cache) ?? null;
+      case 'winrate': return calcWinRate(f.code, cache) ?? null;
+      case 'buy': return f.buy ?? null;
+      case 'def': return f.def ?? null;
+      case 'avg': return f.avg ?? null;
+      case 'upDays': return calcUpDownDays(f).up;
+      case 'dnDays': return calcUpDownDays(f).dn;
+      default: {
+        const v = cache[cacheKey(f.code, sortCol)];
+        return v ?? null;
+      }
+    }
+  };
+  
+  list.sort((a, b) => {
+    const va = valFn(a), vb = valFn(b);
+    // 处理字符串排序
+    if (typeof va === 'string' && typeof vb === 'string') {
+      return sortDir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+    }
+    // 数字排序，null/undefined 排最后
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    return sortDir === 'asc' ? va - vb : vb - va;
+  });
+  
+  return list;
+}
+
+function buildDisplayDates() {
+  displayDates = [...DATES];
+  const today = todayKey();
+  if (!displayDates.some(d => normDate(d) === normDate(today))) {
+    displayDates.push(today);
+  }
+}
+
+function renderCards() {
+  const today = todayKey();
+  const todayN = normDate(today);
+  const cache = getCache();
+  
+  const n = FUNDS.length;
+  
+  // 动态计算平均总收益率（优先用latestNav，否则用固定sumR）
+  let retSum = 0, retCount = 0;
+  FUNDS.forEach(f => {
+    const dynRet = calcRet(f);
+    if (dynRet !== null) { retSum += dynRet; retCount++; }
+    else if (f.sumR != null) { retSum += f.sumR; retCount++; }
+  });
+  const avgRet = retCount > 0 ? (retSum / retCount).toFixed(1) : '—';
+  
+  let up=0, dn=0, noData=0;
+  FUNDS.forEach(f => {
+    const v = cache[cacheKey(f.code, today)];
+    if (v == null) noData++;
+    else if (v > 0) up++;
+    else if (v < 0) dn++;
+  });
+  
+  // 动态排序找最强/最弱
+  const withRet = FUNDS.map(f => {
+    const dynRet = calcRet(f);
+    return { ...f, dynRet: dynRet !== null ? dynRet : (f.sumR || 0) };
+  });
+  const best = [...withRet].sort((a,b)=>b.dynRet-a.dynRet)[0];
+  const worst = [...withRet].sort((a,b)=>a.dynRet-b.dynRet)[0];
+  
+  document.getElementById('cards').innerHTML = `
+    <div class="card">
+      <div class="card-label">持仓基金</div>
+      <div class="card-val" style="color:var(--blue)">${n} 支</div>
+      <div class="card-sub">统计区间：4/27 起</div>
+    </div>
+    <div class="card">
+      <div class="card-label">平均总收益率</div>
+      <div class="card-val" style="color:var(--red)">+${avgRet}%</div>
+      <div class="card-sub">自4/27 至最新净值日</div>
+    </div>
+    <div class="card">
+      <div class="card-label">今日行情</div>
+      <div class="card-val">
+        <span style="color:var(--red)">涨${up}</span>
+        <span style="color:var(--muted);font-size:14px"> / </span>
+        <span style="color:var(--green)">跌${dn}</span>
+        <span style="color:var(--muted);font-size:14px"> / </span>
+        <span style="color:var(--muted);font-size:14px">待${noData}</span>
+      </div>
+      <div class="card-sub">${today} 估算数据</div>
+    </div>
+    <div class="card">
+      <div class="card-label">最强 / 最弱</div>
+      <div class="card-val" style="font-size:14px">
+        <span style="color:var(--red)">+${best.dynRet.toFixed(1)}%</span>
+        <span style="color:var(--muted);font-size:12px"> / </span>
+        <span style="color:${worst.dynRet >= 0 ? 'var(--red)' : 'var(--green)'}">+${worst.dynRet.toFixed(1)}%</span>
+      </div>
+      <div class="card-sub">${best.name.substring(0,5)} / ${worst.name.substring(0,5)}</div>
+    </div>
+  `;
+}
+
+function renderTable() {
+  const today = todayKey();
+  const todayN = normDate(today);
+  const cache = getCache();
+  
+  // 构建排序态indicator的列名
+  function sortCls(col) {
+    if (col !== sortCol) return 'sortable';
+    return `sortable sort-${sortDir}`;
+  }
+  
+  // Header
+  const fixedThs = `
+    <th class="name-col fixed-th ${sortCls('name')}" onclick="setSort('name')">基金名称</th>
+    <th class="${sortCls('code')}" style="min-width:64px" onclick="setSort('code')">代码</th>
+    <th class="${sortCls('ret')}" style="min-width:76px" onclick="setSort('ret')">总收益率</th>
+    <th class="model-col ${sortCls('sharpe')}" style="min-width:64px" onclick="setSort('sharpe')" title="(年化收益−Rf)/年化波动率，>1优秀">夏普<div class="model-sub">比率</div></th>
+    <th class="model-col ${sortCls('maxdd')}" style="min-width:64px" onclick="setSort('maxdd')" title="区间最大净值回撤，越小越稳">最大<div class="model-sub">回撤</div></th>
+    <th class="model-col ${sortCls('recovery')}" style="min-width:58px" onclick="setSort('recovery')" title="最大回撤后恢复到前高所需交易日数">修复<div class="model-sub">天数</div></th>
+    <th class="model-col ${sortCls('vol')}" style="min-width:68px" onclick="setSort('vol')" title="日收益年化标准差，<20%稳定">年化<div class="model-sub">波动率</div></th>
+    <th class="model-col ${sortCls('winrate')}" style="min-width:54px" onclick="setSort('winrate')" title="盈利天数占比，>60%优秀">胜率</th>
+    <th class="${sortCls('buy')}" style="min-width:76px" onclick="setSort('buy')">收益能力</th>
+    <th class="${sortCls('def')}" style="min-width:76px" onclick="setSort('def')">防守能力</th>
+    <th class="${sortCls('avg')}" style="min-width:66px" onclick="setSort('avg')">平均日收益</th>
+    <th class="${sortCls('upDays')}" style="min-width:62px" onclick="setSort('upDays')">盈利<span style="color:var(--red);font-size:10px">天数</span></th>
+    <th class="${sortCls('dnDays')}" style="min-width:62px" onclick="setSort('dnDays')">亏损<span style="color:var(--green);font-size:10px">天数</span></th>
+  `;
+  const dateThs = displayDates.map(d => {
+    const nd = normDate(d);
+    const isToday = nd === todayN;
+    return `<th class="date-col sortable${isToday?' today':''} ${sortCls(d)}" style="min-width:54px" onclick="setSort('${d}')">${fmtDate(d)}${isToday?'<br><span style="font-size:9px">今日</span>':''}</th>`;
+  }).join('');
+  document.getElementById('thead').innerHTML = `<tr>${fixedThs}${dateThs}</tr>`;
+  
+  // Rows (sorted)
+  const sorted = getSortedFunds();
+  const navCacheAll = getNavCache();
+  const rows = sorted.map(f => {
+    // 动态总收益率：优先用净值缓存计算，否则用固定sumR
+    const dynRet = calcRet(f);
+    const retVal = dynRet !== null ? dynRet : f.sumR;
+    const retCls = retVal >= 0 ? 'total-up' : 'total-dn';
+    const retSign = retVal >= 0 ? '+' : '';
+    
+    // 净值来源标注
+    const navEntry = getLatestNavFromCache(f.code);
+    const navTip = navEntry ? `title="净值日期: ${navEntry.date} | 净值: ${navEntry.nav}"` : '';
+    
+    // === 模型评估指标（基于缓存数据，每日自动更新） ===
+    const sharpe = calcSharpe(f.code, cache);
+    const maxdd = calcMaxDrawdown(f, navCacheAll, cache);
+    const vol = calcVolatility(f.code, cache);
+    const wr = calcWinRate(f.code, cache);
+    const recovery = calcRecoveryDays(f, navCacheAll, cache);
+    
+    const sharpeHtml = sharpe !== null
+      ? `<span class="${sharpe >= 1 ? 'model-good' : sharpe >= 0.5 ? 'model-mid' : 'model-bad'}">${sharpe.toFixed(2)}</span>`
+      : '<span class="pct na">—</span>';
+    const maxddHtml = maxdd !== null
+      ? `<span class="${maxdd > -5 ? 'model-good' : maxdd > -15 ? 'model-mid' : 'model-bad'}">${maxdd.toFixed(2)}%</span>`
+      : '<span class="pct na">—</span>';
+    const recHtml = recovery !== null
+      ? recovery > 0
+        ? `<span class="${recovery <= 3 ? 'model-good' : recovery <= 10 ? 'model-mid' : 'model-bad'}">${recovery}天</span>`
+        : `<span class="model-bad" title="尚未恢复，距谷底已${-recovery}天">未恢复</span>`
+      : '<span class="pct na">—</span>';
+    const volHtml = vol !== null
+      ? `<span class="${vol < 20 ? 'model-good' : vol < 40 ? 'model-mid' : 'model-bad'}">${vol.toFixed(1)}%</span>`
+      : '<span class="pct na">—</span>';
+    const wrHtml = wr !== null
+      ? `<span class="${wr >= 60 ? 'model-good' : wr >= 45 ? 'model-mid' : 'model-bad'}">${wr.toFixed(0)}%</span>`
+      : '<span class="pct na">—</span>';
+    
+    // 盈利/亏损天数
+    const ud = calcUpDownDays(f);
+    const upHtml = `<span style="color:var(--red);font-weight:600">${ud.up}</span>`;
+    const dnHtml = `<span style="color:var(--green);font-weight:600">${ud.dn}</span>`;
+    
+    const buyHtml = f.buy != null
+      ? `<div class="bar-wrap"><div class="bar"><div class="bar-fill" style="width:${f.buy}%;background:${f.buy>85?'var(--red)':'var(--blue)'}"></div></div><span class="bar-num">${f.buy}</span></div>`
+      : '<span style="color:var(--muted)">—</span>';
+    
+    const defHtml = f.def != null
+      ? `<div class="bar-wrap"><div class="bar"><div class="bar-fill" style="width:${f.def}%;background:var(--green)"></div></div><span class="bar-num">${f.def}</span></div>`
+      : '<span style="color:var(--muted)">—</span>';
+    
+    const avgHtml = f.avg != null
+      ? `<span class="pct ${f.avg>0?'up':'dn'}">${f.avg>0?'+':''}${f.avg.toFixed(3)}%</span>`
+      : '<span class="pct na">—</span>';
+    
+    const tagHtml = f.tag
+      ? `<span class="tag ${f.tag==='压舱石'?'tag-blue':f.tag==='波动较大'?'tag-red':'tag-orange'}">${f.tag}</span>`
+      : '';
+    
+    const dailyCells = displayDates.map(d => {
+      const nd = normDate(d);
+      const isToday = nd === normDate(today);
+      const v = getVal(f.code, d);
+      
+      let inner;
+      if (v === null) {
+        inner = isToday
+          ? `<span class="pct na" id="c_${f.code}">—</span>`
+          : `<span class="pct na">—</span>`;
+      } else {
+        const cls = v > 0 ? 'up' : v < 0 ? 'dn' : 'zero';
+        const sign = v > 0 ? '+' : '';
+        inner = `<span class="pct ${cls}" id="c_${f.code}">${sign}${v.toFixed(2)}%</span>`;
+      }
+      return `<td${isToday?' class="today-td"':''}>${inner}</td>`;
+    }).join('');
+    
+    return `<tr>
+      <td class="name-col">
+        <div class="fname">${f.name}${tagHtml}</div>
+        <div class="fcode">${f.code}</div>
+      </td>
+      <td>${f.code}</td>
+      <td><span class="${retCls}" id="ret_${f.code}" ${navTip}>${retSign}${retVal.toFixed(2)}%</span></td>
+      <td>${sharpeHtml}</td>
+      <td>${maxddHtml}</td>
+      <td>${recHtml}</td>
+      <td>${volHtml}</td>
+      <td>${wrHtml}</td>
+      <td>${buyHtml}</td>
+      <td>${defHtml}</td>
+      <td>${avgHtml}</td>
+      <td>${upHtml}</td>
+      <td>${dnHtml}</td>
+      ${dailyCells}
+    </tr>`;
+  }).join('');
+  
+  document.getElementById('tbody').innerHTML = rows;
+  document.getElementById('cnt').textContent = FUNDS.length;
+}
+
+// 排序切换函数
+const SORT_LABELS = {
+  'name': '基金名称', 'code': '代码', 'ret': '总收益率', 'sharpe': '夏普比率',
+  'maxdd': '最大回撤', 'recovery': '修复天数', 'vol': '年化波动率', 'winrate': '胜率',
+  'buy': '收益能力', 'def': '防守能力',
+  'avg': '平均日收益', 'upDays': '盈利天数', 'dnDays': '亏损天数', 'seq': '默认'
+};
+
+function setSort(col) {
+  if (sortCol === col) {
+    sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    sortCol = col;
+    sortDir = 'asc';
+  }
+  // 更新排序信息提示
+  const label = SORT_LABELS[col] || col;
+  document.getElementById('sortInfo').textContent = `排序: ${label} ${sortDir==='asc'?'↑':'↓'}`;
+  renderTable();
+  renderCards();
+}
+
+function resetSort() {
+  sortCol = 'upDays';
+  sortDir = 'desc';
+  document.getElementById('sortInfo').textContent = '';
+  renderTable();
+  renderCards();
+}
+
+function updateCellUI(code, date, val) {
+  const nd = normDate(date);
+  const todayN = normDate(todayKey());
+  if (nd !== todayN) return;  // Only update today cell in real-time
+  
+  const el = document.getElementById(`c_${code}`);
+  if (!el) return;
+  const cls = val > 0 ? 'up' : val < 0 ? 'dn' : 'zero';
+  const sign = val > 0 ? '+' : '';
+  el.className = `pct ${cls}`;
+  el.textContent = `${sign}${val.toFixed(2)}%`;
+}
+
+// 实时更新总收益率单元格
+function updateRetUI(f) {
+  const el = document.getElementById(`ret_${f.code}`);
+  if (!el) return;
+  const dynRet = calcRet(f);
+  if (dynRet === null) return;
+  const cls = dynRet >= 0 ? 'total-up' : 'total-dn';
+  const sign = dynRet >= 0 ? '+' : '';
+  el.className = cls;
+  el.textContent = `${sign}${dynRet.toFixed(2)}%`;
+  
+  // 更新tooltip
+  const navEntry = getLatestNavFromCache(f.code);
+  if (navEntry) el.title = `净值日期: ${navEntry.date} | 净值: ${navEntry.nav}`;
+}
+
+// ============================================================
+// 获取操作
+// ============================================================
+async function fetchTodayData() {
+  const btn = document.getElementById('fetchTodayBtn');
+  const dot = document.getElementById('statusDot');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin">⟳</span> 获取中...';
+  dot.className = 'dot loading';
+  
+  const today = todayKey();
+  const todayN = normDate(today);
+  const cache = getCache();
+  const navCache = getNavCache();
+  
+  // 今天ISO日期
+  const now = new Date();
+  const todayISO = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+  
+  let ok = 0, fail = 0;
+  
+  showProg('正在获取今日估算涨跌幅...', 0);
+  
+  for (let i = 0; i < FUNDS.length; i++) {
+    const f = FUNDS[i];
+    showProg(`正在获取 ${f.name.substring(0,8)}...`, Math.round((i/FUNDS.length)*100));
+    
+    try {
+      const d = await fetchEstimate(f.code);
+      if (d && d.gszzl !== '' && d.gszzl !== undefined) {
+        const val = parseFloat(d.gszzl);
+        if (!isNaN(val)) {
+          cache[cacheKey(f.code, today)] = val;
+          updateCellUI(f.code, today, val);
+          ok++;
+          
+          // 同时存储估算净值用于实时总收益率计算
+          if (d.gsz && parseFloat(d.gsz) > 0) {
+            const estimatedNav = parseFloat(d.gsz);
+            // 用特殊key标记为估算值（今日日期+"_est"）
+            navCache[navCacheKey(f.code, todayISO)] = estimatedNav;
+            // 实时更新总收益率单元格
+            updateRetUI(f);
+          }
+        } else fail++;
+      } else fail++;
+    } catch(e) { fail++; }
+  }
+  
+  setCache(cache);
+  setNavCache(navCache);
+  hideProg();
+  renderCards();
+  
+  const nowT = new Date();
+  document.getElementById('updateTime').textContent = 
+    `更新于 ${nowT.getHours()}:${String(nowT.getMinutes()).padStart(2,'0')}`;
+  dot.className = `dot ${fail > ok ? 'err' : 'ok'}`;
+  btn.disabled = false;
+  btn.innerHTML = '⟳ 获取今日涨跌幅';
+  
+  toast(fail === 0 
+    ? `✅ 已更新全部 ${ok} 支基金今日涨跌幅及收益率` 
+    : `✅ 更新 ${ok} 支 | ⚠️ ${fail} 支获取失败`, 
+    fail > 0 ? 'err' : 'ok');
+}
+
+async function fetchAllHistory() {
+  const btn = document.getElementById('fetchTodayBtn');
+  const dot = document.getElementById('statusDot');
+  btn.disabled = true;
+  dot.className = 'dot loading';
+  
+  const endDate = new Date().toISOString().split('T')[0];
+  const sd = new Date(); sd.setDate(sd.getDate() - 40);
+  const startDate = sd.toISOString().split('T')[0];
+  
+  const cache = getCache();
+  const navCache = getNavCache();
+  let updated = 0;
+  
+  showProg('正在补全历史净值数据...', 0);
+  
+  for (let i = 0; i < FUNDS.length; i++) {
+    const f = FUNDS[i];
+    showProg(`补全 ${f.name.substring(0,8)} 历史数据...`, Math.round((i/FUNDS.length)*100));
+    
+    try {
+      const hist = await fetchHistory(f.code, startDate, endDate);
+      if (hist) {
+        hist.forEach(item => {
+          const isoDate = item.FSRQ.substring(0, 10); // YYYY-MM-DD
+          const d = new Date(isoDate);
+          const dk = `${d.getMonth()+1}/${String(d.getDate()).padStart(2,'0')}`;
+          
+          // 存涨跌幅
+          const val = parseFloat(item.JZZZL);
+          if (!isNaN(val)) {
+            const k = cacheKey(f.code, dk);
+            if (cache[k] === undefined) { cache[k] = val; updated++; }
+          }
+          
+          // 存净值（总是用最新值覆盖，保持净值最新）
+          const dwjz = parseFloat(item.DWJZ);
+          if (!isNaN(dwjz)) {
+            navCache[navCacheKey(f.code, isoDate)] = dwjz;
+          }
+        });
+      }
+    } catch(e) {}
+    
+    await sleep(150);
+  }
+  
+  setCache(cache);
+  setNavCache(navCache);
+  buildDisplayDates();
+  renderCards();
+  renderTable();
+  hideProg();
+  
+  dot.className = 'dot ok';
+  btn.disabled = false;
+  toast(`📅 历史数据补全完成，新增 ${updated} 条涨跌幅记录`, 'ok');
+}
+
+// ============================================================
+// UI 工具
+// ============================================================
+function showProg(txt, pct) {
+  const el = document.getElementById('progOverlay');
+  el.className = 'progress-overlay show';
+  document.getElementById('progText').textContent = txt;
+  document.getElementById('progBar').style.width = pct + '%';
+}
+function hideProg() {
+  document.getElementById('progOverlay').className = 'progress-overlay';
+}
+function toast(msg, type='ok') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = `toast show ${type}`;
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.className = 'toast', 4000);
+}
+
+// ============================================================
+// 启动
+// ============================================================
+async function init() {
+  initCache();
+  buildDisplayDates();
+  renderCards();
+  renderTable();
+  
+  // 检测是否需要补全历史数据（5/26, 5/27 或净值缓存为空）
+  const cache = getCache();
+  const navCache = getNavCache();
+  const checkDates = ['5/26','5/27'];
+  const missingDrCount = FUNDS.filter(f => 
+    checkDates.some(d => cache[cacheKey(f.code, d)] === undefined)
+  ).length;
+  
+  // 检测净值缓存是否有数据（用于总收益率）
+  const navCacheSize = Object.keys(navCache).length;
+  
+  if (missingDrCount > 5 || navCacheSize < FUNDS.length) {
+    // 需要补全历史数据（含净值）
+    setTimeout(async () => {
+      toast('🔄 正在自动获取历史净值及涨跌幅数据...', '');
+      await fetchAllHistory();
+    }, 800);
+  } else {
+    // 历史数据已有，直接获取今日数据
+    setTimeout(() => fetchTodayData(), 800);
+  }
+}
+
+window.addEventListener('load', init);
+</script>
+</body>
+</html>
