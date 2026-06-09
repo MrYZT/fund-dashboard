@@ -243,7 +243,7 @@ td.today-td { background: rgba(88,166,255,0.04); }
 <div class="header">
   <div>
     <h1>📊 基金表现统计看板</h1>
-    <div class="header-sub" id="headerSub">数据来源：天天基金 · 涨跌幅单位：%</div>
+    <div class="header-sub" id="headerSub">数据来源：天天基金 · 涨跌幅单位：% · 交易时间每5分钟自动刷新</div>
   </div>
   <div class="actions">
     <span id="updateTime" style="font-size:11px;color:var(--muted)">—</span>
@@ -279,11 +279,61 @@ td.today-td { background: rgba(88,166,255,0.04); }
 // ============================================================
 // 基础数据（来自Excel）
 // ============================================================
-const DATES = ["4/27","4/28","4/29","4/30","5/06","5/07","5/08","5/11","5/12","5/13","5/14","5/15","5/18","5/19","5/20","5/21","5/22","5/25","5/26","5/27","5/28","5/29"];
+
+// 工具函数（提前声明，供后续使用）
+function todayKey() {
+  const d = new Date();
+  return `${d.getMonth()+1}/${String(d.getDate()).padStart(2,'0')}`;
+}
+function normDate(s) {
+  if (!s) return '';
+  const [m,day] = s.split('/');
+  return `${parseInt(m)}/${String(parseInt(day)).padStart(2,'0')}`;
+}
+function fmtDate(s) {
+  const [m,day] = s.split('/');
+  return `${parseInt(m)}/${parseInt(day)}`;
+}
+
+// SEED_DATES: 原始硬编码日期，仅用于 dr 数组的索引对齐
+const SEED_DATES = ["4/27","4/28","4/29","4/30","5/06","5/07","5/08","5/11","5/12","5/13","5/14","5/15","5/18","5/19","5/20","5/21","5/22","5/25","5/26","5/27","5/28","5/29"];
+
+// SEED_DATE_MAP: 日期→索引映射，用于快速查找 dr 数组对应位置
+const SEED_DATE_MAP = {};
+SEED_DATES.forEach((d, i) => { SEED_DATE_MAP[normDate(d)] = i; });
+
+// 2026年A股休市日期（节假日），按需更新
+const HOLIDAYS_2026 = new Set([
+  '2026-01-01','2026-01-02','2026-01-03',
+  '2026-01-26','2026-01-27','2026-01-28','2026-01-29','2026-01-30','2026-01-31','2026-02-01','2026-02-02',
+  '2026-04-04','2026-04-05','2026-04-06',
+  '2026-05-01','2026-05-02','2026-05-03','2026-05-04','2026-05-05',
+  '2026-05-30','2026-05-31','2026-06-01',
+  '2026-10-01','2026-10-02','2026-10-03','2026-10-04','2026-10-05','2026-10-06','2026-10-07',
+]);
+
+// 自动生成从4/27到今天的所有交易日（工作日-节假日）
+function generateWorkdays() {
+  const start = new Date(2026, 3, 27);
+  const end = new Date();
+  const dates = [];
+  const d = new Date(start);
+  while (d <= end) {
+    const day = d.getDay();
+    const iso = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    if (day !== 0 && day !== 6 && !HOLIDAYS_2026.has(iso)) {
+      dates.push(`${d.getMonth()+1}/${String(d.getDate()).padStart(2,'0')}`);
+    }
+    d.setDate(d.getDate() + 1);
+  }
+  return dates;
+}
+
+const DATES = generateWorkdays();
 
 // sNav: 4/27单位净值（计算总收益率起点）
 // latestNav: 最新已知净值（由历史API更新）
-// dr: 每日涨跌幅，索引对应DATES数组
+// dr: 每日涨跌幅，索引对应SEED_DATES数组（仅原始22天有数据）
 const FUNDS = [
   {seq:1, name:"易方达科融混合", code:"006533", buy:88.4, def:66.29, tag:null, sNav:7.8347, latestNav:null, ret:null, days:18, sumR:11.03, up:12, dn:6, avg:0.613, dr:[0.68,-1.21,0.87,-0.01,2.11,2.22,-0.19,2.18,0.84,2.21,-0.94,-1.49,0.18,0.62,1.13,-2.8,2.52,2.11,0.38,-0.24,null,null]},
   {seq:2, name:"摩根双核平衡混合A", code:"373020", buy:76.42, def:73.58, tag:"压舱石", sNav:2.1742, latestNav:null, ret:null, days:18, sumR:9.67, up:11, dn:7, avg:0.537, dr:[-0.34,-0.17,1.12,-0.12,1.92,2.13,-0.36,1.87,0.92,1.54,-1.37,-1.82,0.55,0.67,1.04,-2.52,2.96,1.65,0.19,-0.36,null,null]},
@@ -311,23 +361,8 @@ const FUNDS = [
 ];
 
 // ============================================================
-// 工具函数
-// ============================================================
-function todayKey() {
-  const d = new Date();
-  return `${d.getMonth()+1}/${String(d.getDate()).padStart(2,'0')}`;
-}
-function normDate(s) {
-  if (!s) return '';
-  const [m,day] = s.split('/');
-  return `${parseInt(m)}/${String(parseInt(day)).padStart(2,'0')}`;
-}
-function fmtDate(s) {
-  const [m,day] = s.split('/');
-  return `${parseInt(m)}/${parseInt(day)}`;
-}
-
-function getCache() {
+// 缓存工具
+// ============================================================function getCache() {
   try { return JSON.parse(localStorage.getItem('fund_cache_v2') || '{}'); } catch { return {}; }
 }
 function setCache(c) { localStorage.setItem('fund_cache_v2', JSON.stringify(c)); }
@@ -364,11 +399,11 @@ function calcRet(f) {
   return (entry.nav / f.sNav - 1) * 100;
 }
 
-// Init cache from excel data
+// Init cache from excel data (使用SEED_DATES对齐dr数组)
 function initCache() {
   const cache = getCache();
   FUNDS.forEach(f => {
-    DATES.forEach((d, i) => {
+    SEED_DATES.forEach((d, i) => {
       const v = f.dr[i];
       if (v !== null && v !== undefined) {
         const k = cacheKey(f.code, d);
@@ -395,9 +430,12 @@ const RISK_FREE = 0.015; // 无风险利率 1.5%（中国1年期国债估算）
 function getDailyReturns(code, cache) {
   const fund = FUNDS.find(f => f.code === code);
   const returns = [];
-  DATES.forEach((d, i) => {
+  DATES.forEach((d) => {
     let v = cache ? cache[cacheKey(code, d)] : getVal(code, d);
-    if (v === null && fund) v = fund.dr[i];
+    if (v === null && fund) {
+      const seedIdx = SEED_DATE_MAP[normDate(d)];
+      if (seedIdx !== undefined) v = fund.dr[seedIdx];
+    }
     if (v != null) returns.push(v / 100);
   });
   return returns;
@@ -422,9 +460,12 @@ function getNavSeries(f, navCache, cache) {
     const c = cache || getCache();
     series = [{ date: '2026-04-27', nav: f.sNav }];
     let nav = f.sNav;
-    DATES.forEach((d, i) => {
+    DATES.forEach((d) => {
       let v = c[cacheKey(f.code, d)];
-      if (v === undefined) v = f.dr[i];
+      if (v === undefined) {
+        const seedIdx = SEED_DATE_MAP[normDate(d)];
+        if (seedIdx !== undefined) v = f.dr[seedIdx];
+      }
       if (v != null) {
         nav = nav * (1 + v / 100);
         const [m, day] = d.split('/');
@@ -514,34 +555,41 @@ function calcRecoveryDays(f, navCache, cache) {
 }
 
 // ============================================================
-// JSONP / API (串行，避免 jsonpgz 函数名冲突)
+// JSONP / API (串行，避免回调函数名冲突)
 // ============================================================
 const _q = [];
 let _qRunning = false;
 
-function jsonpFetch(url) {
-  return new Promise((res, rej) => {
+// 通用 JSONP fetcher 工厂：为不同 API 创建独立的回调函数名
+function makeJsonp(cbName, timeout = 6000) {
+  return (url) => new Promise((res, rej) => {
     const script = document.createElement('script');
-    const prev = window.jsonpgz;
+    const prev = window[cbName];
     let done = false;
-    window.jsonpgz = (data) => {
+    window[cbName] = (data) => {
       done = true;
-      window.jsonpgz = prev;
+      window[cbName] = prev;
       try { document.head.removeChild(script); } catch(e){}
       res(data);
     };
     script.onerror = () => {
-      window.jsonpgz = prev;
+      window[cbName] = prev;
       try { document.head.removeChild(script); } catch(e){}
-      rej(new Error('JSONP error'));
+      rej(new Error('JSONP error for ' + cbName));
     };
     script.src = url;
     document.head.appendChild(script);
     setTimeout(() => {
-      if (!done) { window.jsonpgz = prev; try{document.head.removeChild(script);}catch(e){} rej(new Error('timeout')); }
-    }, 6000);
+      if (!done) { window[cbName] = prev; try{document.head.removeChild(script);}catch(e){} rej(new Error('JSONP timeout for ' + cbName)); }
+    }, timeout);
   });
 }
+
+// 实时估算 API（固定回调名 jsonpgz）
+const jsonpFetch = makeJsonp('jsonpgz');
+
+// 历史净值 API（自定义回调名 jsonpHist，超时 15s，请求量大）
+const jsonpHistFetch = makeJsonp('jsonpHist', 15000);
 
 async function fetchEstimate(code) {
   return new Promise(r => {
@@ -564,12 +612,16 @@ async function _runQ() {
 }
 
 async function fetchHistory(code, startDate, endDate) {
+  // 使用 JSONP 绕过 CORS（GitHub Pages / 本地均可正常工作）
+  // EASTMONEY 历史 API 支持 callback 参数
   try {
-    const url = `https://api.fund.eastmoney.com/f10/lsjz?fundCode=${code}&pageIndex=1&pageSize=50&startDate=${startDate}&endDate=${endDate}&_=${Date.now()}`;
-    const resp = await fetch(url, { headers:{ 'Referer':'https://fund.eastmoney.com/' } });
-    const data = await resp.json();
+    const url = `https://api.fund.eastmoney.com/f10/lsjz?fundCode=${code}&pageIndex=1&pageSize=50&startDate=${startDate}&endDate=${endDate}&callback=jsonpHist&_=${Date.now()}`;
+    const data = await jsonpHistFetch(url);
     return data?.Data?.LSJZList || null;
-  } catch { return null; }
+  } catch(e) {
+    console.warn('History JSONP failed for', code, e);
+    return null;
+  }
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -586,12 +638,13 @@ function calcUpDownDays(f) {
   const cache = getCache();
   const today = todayKey();
   let up = 0, dn = 0;
-  DATES.forEach((d, i) => {
-    // 只计算到今天（含）
+  DATES.forEach((d) => {
     if (normDate(d) > normDate(today)) return;
-    // 优先从缓存取，其次从dr数组
     let v = cache[cacheKey(f.code, d)];
-    if (v === undefined) v = f.dr[i];
+    if (v === undefined) {
+      const seedIdx = SEED_DATE_MAP[normDate(d)];
+      if (seedIdx !== undefined) v = f.dr[seedIdx];
+    }
     if (v == null) return;  // 跳过无数据日期
     if (v > 0) up++;
     else if (v < 0) dn++;
@@ -653,6 +706,38 @@ function buildDisplayDates() {
   if (!displayDates.some(d => normDate(d) === normDate(today))) {
     displayDates.push(today);
   }
+  // 从缓存中找出 DATES 之外的新日期（如 5/28 历史数据已拉取），按日期排序插入
+  const cache = getCache();
+  const seen = new Set(displayDates.map(d => normDate(d)));
+  const extraDates = [];
+  FUNDS.forEach(f => {
+    Object.keys(cache).forEach(k => {
+      const prefix = f.code + '__';
+      if (k.startsWith(prefix)) {
+        const d = k.substring(prefix.length);
+        const nd = normDate(d);
+        if (!seen.has(nd)) {
+          seen.add(nd);
+          extraDates.push(d);
+        }
+      }
+    });
+  });
+  // 去重排序：按 M/D 解析后排序
+  const parseMD = s => { const [m,d]=s.split('/'); return parseInt(m)*100+parseInt(d); };
+  extraDates.sort((a,b) => parseMD(a)-parseMD(b));
+  // 插入到合适位置（today 之前，DATES 末尾之后）
+  displayDates = [...DATES];
+  extraDates.forEach(d => {
+    if (!displayDates.some(dd => normDate(dd) === normDate(d))) {
+      displayDates.push(d);
+    }
+  });
+  if (!displayDates.some(d => normDate(d) === normDate(today))) {
+    displayDates.push(today);
+  }
+  // 最终按日期排序
+  displayDates.sort((a,b) => parseMD(a)-parseMD(b));
 }
 
 function renderCards() {
@@ -970,6 +1055,7 @@ async function fetchTodayData() {
   setNavCache(navCache);
   hideProg();
   renderCards();
+  renderTable();
   
   const nowT = new Date();
   document.getElementById('updateTime').textContent = 
@@ -984,7 +1070,7 @@ async function fetchTodayData() {
     fail > 0 ? 'err' : 'ok');
 }
 
-async function fetchAllHistory() {
+async function fetchAllHistory({ autoFetchToday = true } = {}) {
   const btn = document.getElementById('fetchTodayBtn');
   const dot = document.getElementById('statusDot');
   btn.disabled = true;
@@ -996,7 +1082,11 @@ async function fetchAllHistory() {
   
   const cache = getCache();
   const navCache = getNavCache();
-  let updated = 0;
+  let updated = 0, yesterdayUpdated = 0;
+  
+  // 计算昨天日期 (M/D 格式)
+  const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayKey = `${yesterday.getMonth()+1}/${yesterday.getDate()}`;
   
   showProg('正在补全历史净值数据...', 0);
   
@@ -1009,38 +1099,62 @@ async function fetchAllHistory() {
       if (hist) {
         hist.forEach(item => {
           const isoDate = item.FSRQ.substring(0, 10); // YYYY-MM-DD
-          const d = new Date(isoDate);
+          const d = new Date(isoDate + 'T00:00:00+08:00'); // 强制北京时间避免时区偏移
           const dk = `${d.getMonth()+1}/${String(d.getDate()).padStart(2,'0')}`;
           
-          // 存涨跌幅
+          // 存涨跌幅（允许覆盖，确保最新数据）
           const val = parseFloat(item.JZZZL);
           if (!isNaN(val)) {
             const k = cacheKey(f.code, dk);
-            if (cache[k] === undefined) { cache[k] = val; updated++; }
+            const wasUndef = cache[k] === undefined;
+            cache[k] = val;
+            if (wasUndef) updated++;
+            if (dk === yesterdayKey) yesterdayUpdated++;
           }
           
-          // 存净值（总是用最新值覆盖，保持净值最新）
+          // 存净值（总是用最新值覆盖）
           const dwjz = parseFloat(item.DWJZ);
           if (!isNaN(dwjz)) {
             navCache[navCacheKey(f.code, isoDate)] = dwjz;
           }
         });
       }
-    } catch(e) {}
+    } catch(e) { console.warn('History fetch failed for', f.code, e); }
     
     await sleep(150);
   }
   
+  // 确保昨天日期在 displayDates 中
+  if (!displayDates.some(d => normDate(d) === normDate(yesterdayKey))) {
+    displayDates.push(yesterdayKey);
+    displayDates.sort((a,b) => {
+      const pa = (s => {const [m,d]=s.split('/');return parseInt(m)*100+parseInt(d);})(a);
+      const pb = (s => {const [m,d]=s.split('/');return parseInt(m)*100+parseInt(d);})(b);
+      return pa - pb;
+    });
+  }
+  
   setCache(cache);
   setNavCache(navCache);
-  buildDisplayDates();
   renderCards();
   renderTable();
   hideProg();
   
   dot.className = 'dot ok';
   btn.disabled = false;
-  toast(`📅 历史数据补全完成，新增 ${updated} 条涨跌幅记录`, 'ok');
+  
+  const yMsg = yesterdayUpdated > 0 ? ` 含昨日 ${yesterdayKey} 共${yesterdayUpdated}条` : '';
+  toast(`📅 历史数据补全完成，新增 ${updated} 条涨跌幅记录${yMsg}`, 'ok');
+  
+  // 历史数据拉完后，自动获取今日实时估算（由调用方控制）
+  if (autoFetchToday) {
+    // 确保按钮可用才触发今日获取
+    setTimeout(() => {
+      if (!document.getElementById('fetchTodayBtn').disabled) {
+        fetchTodayData();
+      }
+    }, 600);
+  }
 }
 
 // ============================================================
@@ -1066,33 +1180,86 @@ function toast(msg, type='ok') {
 // ============================================================
 // 启动
 // ============================================================
+
+// 判断当前是否在交易时间（工作日 9:00-15:00）
+function isTradingTime() {
+  const now = new Date();
+  const day = now.getDay();
+  if (day === 0 || day === 6) return false;
+  const h = now.getHours();
+  const m = now.getMinutes();
+  const t = h * 60 + m;
+  return t >= 9 * 60 && t < 15 * 60;
+}
+
+// 自动刷新定时器
+let _autoRefreshTimer = null;
+function startAutoRefresh() {
+  if (_autoRefreshTimer) clearInterval(_autoRefreshTimer);
+  _autoRefreshTimer = setInterval(() => {
+    if (isTradingTime()) {
+      console.log('[AutoRefresh] 交易时间自动刷新...');
+      fetchTodayData();
+    }
+  }, 5 * 60 * 1000); // 每5分钟
+}
+
+// 获取最近一个交易日（向前查找）
+function getLastTradingDay() {
+  const d = new Date();
+  for (let i = 0; i < 7; i++) {
+    const day = d.getDay();
+    const iso = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    if (day !== 0 && day !== 6 && !HOLIDAYS_2026.has(iso)) {
+      return normDate(`${d.getMonth()+1}/${d.getDate()}`);
+    }
+    d.setDate(d.getDate() - 1);
+  }
+  return todayKey();
+}
+
 async function init() {
   initCache();
   buildDisplayDates();
   renderCards();
   renderTable();
   
-  // 检测是否需要补全历史数据（5/26, 5/27 或净值缓存为空）
   const cache = getCache();
-  const navCache = getNavCache();
-  const checkDates = ['5/26','5/27'];
+  const today = todayKey();
+  
+  // 找最近交易日和倒数第2个交易日，检查数据是否缺失
+  const recentTradingDays = DATES.filter(d => normDate(d) <= normDate(today)).slice(-3);
+  
   const missingDrCount = FUNDS.filter(f => 
-    checkDates.some(d => cache[cacheKey(f.code, d)] === undefined)
+    recentTradingDays.some(d => {
+      const v = cache[cacheKey(f.code, d)];
+      const seedIdx = SEED_DATE_MAP[normDate(d)];
+      const hasSeed = seedIdx !== undefined && f.dr[seedIdx] != null;
+      return (v === undefined || v === null) && !hasSeed;
+    })
   ).length;
   
-  // 检测净值缓存是否有数据（用于总收益率）
-  const navCacheSize = Object.keys(navCache).length;
+  // 检查缓存中是否有最近交易日的数据
+  const lastTD = getLastTradingDay();
+  const hasRecentData = FUNDS.filter(f => cache[cacheKey(f.code, lastTD)] !== undefined).length;
   
-  if (missingDrCount > 5 || navCacheSize < FUNDS.length) {
-    // 需要补全历史数据（含净值）
+  // 始终在打开时拉取一次历史+今日数据（确保数据最新）
+  const needHistory = missingDrCount > 0 || hasRecentData < FUNDS.length;
+  
+  if (needHistory) {
     setTimeout(async () => {
-      toast('🔄 正在自动获取历史净值及涨跌幅数据...', '');
-      await fetchAllHistory();
+      toast('🔄 正在自动获取最新数据...', '');
+      await fetchAllHistory({ autoFetchToday: false });
+      setTimeout(() => fetchTodayData(), 500);
     }, 800);
   } else {
-    // 历史数据已有，直接获取今日数据
-    setTimeout(() => fetchTodayData(), 800);
+    setTimeout(async () => {
+      await fetchTodayData();
+    }, 800);
   }
+  
+  // 启动交易时间自动刷新
+  startAutoRefresh();
 }
 
 window.addEventListener('load', init);
