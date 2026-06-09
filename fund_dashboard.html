@@ -362,7 +362,8 @@ const FUNDS = [
 
 // ============================================================
 // 缓存工具
-// ============================================================function getCache() {
+// ============================================================
+function getCache() {
   try { return JSON.parse(localStorage.getItem('fund_cache_v2') || '{}'); } catch { return {}; }
 }
 function setCache(c) { localStorage.setItem('fund_cache_v2', JSON.stringify(c)); }
