@@ -642,7 +642,10 @@ async function fetchHistory(code, startDate, endDate) {
         trendData.forEach(item => {
           if (item.x >= startTs && item.x <= endTs) {
             const d = new Date(item.x);
-            const isoDate = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+            // 东方财富时间戳是北京时间（UTC+8）零点，用UTC方法解析以保证跨时区正确
+            const bjTs = item.x + 8 * 3600 * 1000;
+            const dBJ = new Date(bjTs);
+            const isoDate = `${dBJ.getUTCFullYear()}-${String(dBJ.getUTCMonth()+1).padStart(2,'0')}-${String(dBJ.getUTCDate()).padStart(2,'0')}`;
             const nav = item.y;
             let jzzzl = '';
             if (item.equityReturn != null && item.equityReturn !== 0) {
@@ -1129,9 +1132,11 @@ async function fetchAllHistory({ autoFetchToday = true } = {}) {
   btn.disabled = true;
   dot.className = 'dot loading';
   
-  const endDate = new Date().toISOString().split('T')[0];
-  const sd = new Date(); sd.setDate(sd.getDate() - 40);
-  const startDate = sd.toISOString().split('T')[0];
+  // 使用北京时间（UTC+8）计算日期，避免 toISOString() 返回 UTC 日期导致少一天
+  const nowBJ = new Date(Date.now() + 8 * 3600 * 1000);
+  const endDate = nowBJ.toISOString().split('T')[0];
+  const sdBJ = new Date(Date.now() + 8 * 3600 * 1000); sdBJ.setDate(sdBJ.getDate() - 40);
+  const startDate = sdBJ.toISOString().split('T')[0];
   
   const cache = getCache();
   const navCache = getNavCache();
@@ -1277,39 +1282,12 @@ async function init() {
   renderCards();
   renderTable();
   
-  const cache = getCache();
-  const today = todayKey();
-  
-  // 找最近交易日和倒数第2个交易日，检查数据是否缺失
-  const recentTradingDays = DATES.filter(d => normDate(d) <= normDate(today)).slice(-3);
-  
-  const missingDrCount = FUNDS.filter(f => 
-    recentTradingDays.some(d => {
-      const v = cache[cacheKey(f.code, d)];
-      const seedIdx = SEED_DATE_MAP[normDate(d)];
-      const hasSeed = seedIdx !== undefined && f.dr[seedIdx] != null;
-      return (v === undefined || v === null) && !hasSeed;
-    })
-  ).length;
-  
-  // 检查缓存中是否有最近交易日的数据
-  const lastTD = getLastTradingDay();
-  const hasRecentData = FUNDS.filter(f => cache[cacheKey(f.code, lastTD)] !== undefined).length;
-  
-  // 始终在打开时拉取一次历史+今日数据（确保数据最新）
-  const needHistory = missingDrCount > 0 || hasRecentData < FUNDS.length;
-  
-  if (needHistory) {
-    setTimeout(async () => {
-      toast('🔄 正在自动获取最新数据...', '');
-      await fetchAllHistory({ autoFetchToday: false });
-      setTimeout(() => fetchTodayData(), 500);
-    }, 800);
-  } else {
-    setTimeout(async () => {
-      await fetchTodayData();
-    }, 800);
-  }
+  // 每次打开都强制拉取历史（覆盖昨天及更早缺失数据），再刷今日估值
+  setTimeout(async () => {
+    toast('🔄 正在自动获取最新数据...', '');
+    await fetchAllHistory({ autoFetchToday: false });
+    setTimeout(() => fetchTodayData(), 500);
+  }, 800);
   
   // 启动交易时间自动刷新
   startAutoRefresh();
