@@ -1142,9 +1142,9 @@ async function fetchAllHistory({ autoFetchToday = true } = {}) {
   const navCache = getNavCache();
   let updated = 0, yesterdayUpdated = 0;
   
-  // 计算昨天日期 (M/D 格式)
-  const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
-  const yesterdayKey = `${yesterday.getMonth()+1}/${yesterday.getDate()}`;
+  // 计算昨天日期 (M/D 格式)，用北京时间避免 UTC 偏移
+  const yesterdayBJ = new Date(Date.now() + 8 * 3600 * 1000 - 86400 * 1000);
+  const yesterdayKey = `${yesterdayBJ.getUTCMonth()+1}/${yesterdayBJ.getUTCDate()}`;
   
   showProg('正在补全历史净值数据...', 0);
   
@@ -1157,8 +1157,9 @@ async function fetchAllHistory({ autoFetchToday = true } = {}) {
       if (hist) {
         hist.forEach(item => {
           const isoDate = item.FSRQ.substring(0, 10); // YYYY-MM-DD
-          const d = new Date(isoDate + 'T00:00:00+08:00'); // 强制北京时间避免时区偏移
-          const dk = `${d.getMonth()+1}/${String(d.getDate()).padStart(2,'0')}`;
+          // 直接从字符串解析，完全避免 Date 对象时区问题
+          const [yyyy, mm, dd] = isoDate.split('-');
+          const dk = `${parseInt(mm)}/${dd}`; // M/DD 格式，如 6/10
           
           // 存涨跌幅（允许覆盖，确保最新数据）
           const val = parseFloat(item.JZZZL);
