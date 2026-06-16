@@ -246,13 +246,13 @@ td.today-td { background: rgba(88,166,255,0.04); }
 <div class="header">
   <div>
     <h1>📊 基金表现统计看板</h1>
-    <div class="header-sub" id="headerSub">数据来源：天天基金 · 涨跌幅单位：% · 交易时间每5分钟自动刷新</div>
+    <div class="header-sub" id="headerSub">数据来源：东方财富 · 涨跌幅单位：% · 交易时间每5分钟自动刷新</div>
   </div>
   <div class="actions">
     <span id="updateTime" style="font-size:11px;color:var(--muted)">—</span>
     <span class="dot" id="statusDot"></span>
     <span id="dataHealth" style="font-size:10px;color:var(--muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
-    <button class="btn" onclick="fetchAllHistory()">📅 补全历史数据</button>
+    <button class="btn" onclick="fetchAllHistory({force:true})">📅 补全历史数据</button>
     <button class="btn primary" id="fetchTodayBtn" onclick="fetchTodayData()">⟳ 获取今日涨跌幅</button>
   </div>
 </div>
@@ -577,163 +577,121 @@ function calcRecoveryDays(f, navCache, cache) {
 }
 
 // ============================================================
-// JSONP / API (串行，避免回调函数名冲突)
+// API: 历史净值 (F10DataApi) + 实时估算 (并行批量)
+// F10DataApi: 返回仅指定日期范围数据，~7KB/只 (vs pingzhongdata ~300KB/只)
+// 无 Referer 限制，涨跌幅直接提供，数据更完整准确
 // ============================================================
-const _q = [];
-let _qRunning = false;
+const BATCH_SIZE = 6; // 并发批量大小
 
-// 通用 JSONP fetcher 工厂：为不同 API 创建独立的回调函数名
-function makeJsonp(cbName, timeout = 6000) {
-  return (url) => new Promise((res, rej) => {
-    const script = document.createElement('script');
-    const prev = window[cbName];
-    let done = false;
-    window[cbName] = (data) => {
-      done = true;
-      window[cbName] = prev;
-      try { document.head.removeChild(script); } catch(e){}
-      res(data);
-    };
-    script.onerror = () => {
-      window[cbName] = prev;
-      try { document.head.removeChild(script); } catch(e){}
-      rej(new Error('JSONP error for ' + cbName));
-    };
-    script.src = url;
-    document.head.appendChild(script);
-    setTimeout(() => {
-      if (!done) { window[cbName] = prev; try{document.head.removeChild(script);}catch(e){} rej(new Error('JSONP timeout for ' + cbName)); }
-    }, timeout);
-  });
-}
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// 实时估算 API（固定回调名 jsonpgz）
-const jsonpFetch = makeJsonp('jsonpgz');
-
-async function fetchEstimate(code) {
-  return new Promise(r => {
-    _q.push({ code, resolve: r });
-    if (!_qRunning) _runQ();
-  });
-}
-async function _runQ() {
-  _qRunning = true;
-  while (_q.length > 0) {
-    const { code, resolve } = _q.shift();
-    try {
-      const url = `https://fundgz.1234567.com.cn/js/${code}.js?rt=${Date.now()}`;
-      const d = await jsonpFetch(url);
-      resolve(d);
-    } catch(e) { resolve(null); }
-    await sleep(100);
-  }
-  _qRunning = false;
-}
+// ---- 历史净值: F10DataApi (东方财富历史净值接口) ----
 
 async function fetchHistory(code, startDate, endDate) {
-  // 通过 fund.eastmoney.com/pingzhongdata/{code}.js 获取历史净值
-  // 该接口为 JS 变量赋值文件，不受 Referer 限制，可从任意域名加载
-  // 串行调用，避免全局变量 Data_netWorthTrend 被并发覆盖
-  // 带重试机制（最多3次），解决偶发加载失败问题
-  const MAX_RETRIES = 3;
+  const MAX_RETRIES = 2;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const result = await _fetchHistoryOnce(code, startDate, endDate);
-      if (result !== null) return result;
-      // result 为 null 表示 Data_netWorthTrend 为空，重试
-      if (attempt < MAX_RETRIES) {
-        console.warn(`[fetchHistory] ${code} 第${attempt}次返回空数据，${attempt < MAX_RETRIES ? '重试中...' : '放弃'}`);
-        await sleep(500 * attempt); // 递增延迟
-      }
+      const result = await _fetchHistoryF10(code, startDate, endDate);
+      if (result !== null && result.length > 0) return result;
+      if (attempt < MAX_RETRIES) await sleep(200);
     } catch(e) {
-      if (attempt < MAX_RETRIES) {
-        console.warn(`[fetchHistory] ${code} 第${attempt}次失败: ${e.message}，重试中...`);
-        await sleep(500 * attempt);
-      } else {
-        console.error(`[fetchHistory] ${code} ${MAX_RETRIES}次重试均失败:`, e.message);
-        return null; // 不再 reject，返回 null 让调用方继续处理其他基金
-      }
+      console.warn(`[fetchHistory] ${code} 第${attempt}次失败: ${e.message}`);
+      if (attempt < MAX_RETRIES) await sleep(200);
+      else return null;
     }
   }
   return null;
 }
 
-async function _fetchHistoryOnce(code, startDate, endDate) {
+async function _fetchHistoryF10(code, startDate, endDate) {
   return new Promise((resolve, reject) => {
     const script = document.createElement('script');
-    script.src = `https://fund.eastmoney.com/pingzhongdata/${code}.js?v=${Date.now()}`;
+    script.src = `https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code=${code}&page=1&sdate=${startDate}&edate=${endDate}&per=90`;
     let done = false;
     const timeout = setTimeout(() => {
       if (done) return;
       done = true;
       cleanup();
-      reject(new Error('pingzhongdata timeout for ' + code));
-    }, 20000); // 加长到20秒
+      reject(new Error('F10DataApi timeout'));
+    }, 10000);
 
     function cleanup() {
       clearTimeout(timeout);
       try { document.head.removeChild(script); } catch(e) {}
+      delete window.apidata;
     }
 
     script.onload = () => {
       if (done) return;
       done = true;
       try {
-        const trendData = window.Data_netWorthTrend;
-        if (!trendData || !trendData.length) {
-          cleanup();
-          resolve(null);
-          return;
-        }
-        const startTs = new Date(startDate + 'T00:00:00+08:00').getTime();
-        const endTs = new Date(endDate + 'T00:00:00+08:00').getTime();
-
+        const raw = window.apidata;
+        if (!raw || !raw.content) { cleanup(); resolve(null); return; }
+        // 解析 HTML 表格提取日期、净值、涨跌幅
+        const tmp = document.createElement('div');
+        tmp.innerHTML = raw.content;
+        const rows = tmp.querySelectorAll('tbody tr');
         const records = [];
-        let prevNav = null;
-        trendData.forEach(item => {
-          if (item.x >= startTs && item.x <= endTs) {
-            // 东方财富时间戳是北京时间（UTC+8）零点，用UTC方法解析以保证跨时区正确
-            const bjTs = item.x + 8 * 3600 * 1000;
-            const dBJ = new Date(bjTs);
-            const isoDate = `${dBJ.getUTCFullYear()}-${String(dBJ.getUTCMonth()+1).padStart(2,'0')}-${String(dBJ.getUTCDate()).padStart(2,'0')}`;
-            const nav = item.y;
-            let jzzzl = '';
-            if (item.equityReturn != null && item.equityReturn !== 0) {
-              jzzzl = String(item.equityReturn);
-            } else if (prevNav !== null && prevNav > 0) {
-              jzzzl = ((nav - prevNav) / prevNav * 100).toFixed(2);
-            }
-            records.push({
-              FSRQ: isoDate,
-              DWJZ: String(nav),
-              JZZZL: jzzzl
-            });
-            prevNav = nav;
-          } else if (item.x < startTs) {
-            prevNav = nav;
+        rows.forEach(row => {
+          const cells = row.querySelectorAll('td');
+          if (cells.length >= 4) {
+            const date = cells[0].textContent.trim();                         // 2026-06-15
+            const nav = cells[1].textContent.trim();                           // 1.5616
+            const changeRate = cells[3].textContent.trim().replace('%', '');   // 0.26
+            if (date && nav) records.push({ FSRQ: date, DWJZ: nav, JZZZL: changeRate });
           }
         });
         cleanup();
-        console.log(`[fetchHistory] ${code} 成功获取 ${records.length} 条记录`);
+        console.log(`[fetchHistory] ${code} 成功获取 ${records.length} 条 (F10DataApi)`);
         resolve(records);
-      } catch(e) {
-        cleanup();
-        reject(e);
-      }
+      } catch(e) { cleanup(); reject(e); }
     };
 
     script.onerror = () => {
       if (done) return;
       done = true;
       cleanup();
-      reject(new Error('Failed to load pingzhongdata for ' + code));
+      reject(new Error('F10DataApi load error'));
     };
 
     document.head.appendChild(script);
   });
 }
 
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+// ---- 实时估算: 并行批量获取 ----
+// fundgz.1234567.com.cn 固定回调名 jsonpgz
+// 通过全局回调 + fundcode 路由实现并行获取（每批6只）
+
+const _estCallbacks = {};
+
+// 全局 jsonpgz 回调 - 按 fundcode 路由到对应的 Promise
+window.jsonpgz = function(data) {
+  if (data && data.fundcode && _estCallbacks[data.fundcode]) {
+    const cb = _estCallbacks[data.fundcode];
+    delete _estCallbacks[data.fundcode];
+    cb(data);
+  }
+};
+
+async function fetchEstimatesBatch(fundCodes) {
+  const results = {};
+  for (let i = 0; i < fundCodes.length; i += BATCH_SIZE) {
+    const batch = fundCodes.slice(i, i + BATCH_SIZE);
+    const promises = batch.map(code => new Promise((resolve) => {
+      const script = document.createElement('script');
+      script.src = `https://fundgz.1234567.com.cn/js/${code}.js?rt=${Date.now()}`;
+      const cleanup = () => { try { document.head.removeChild(script); } catch(e) {} };
+      const timer = setTimeout(() => { delete _estCallbacks[code]; resolve(null); cleanup(); }, 8000);
+      _estCallbacks[code] = (data) => { clearTimeout(timer); resolve(data); cleanup(); };
+      script.onerror = () => { delete _estCallbacks[code]; clearTimeout(timer); resolve(null); cleanup(); };
+      document.head.appendChild(script);
+    }));
+    const batchResults = await Promise.all(promises);
+    batch.forEach((code, j) => { results[code] = batchResults[j]; });
+    if (i + BATCH_SIZE < fundCodes.length) await sleep(50);
+  }
+  return results;
+}
 
 // ============================================================
 // 渲染
@@ -1128,39 +1086,32 @@ async function fetchTodayData() {
   const todayN = normDate(today);
   const cache = getCache();
   const navCache = getNavCache();
-  
-  // 今天ISO日期（北京时间）
   const todayISO = bjTodayISO();
   
   let ok = 0, fail = 0;
-  
   showProg('正在获取今日估算涨跌幅...', 0);
-  
-  for (let i = 0; i < FUNDS.length; i++) {
-    const f = FUNDS[i];
-    showProg(`正在获取 ${f.name.substring(0,8)}...`, Math.round((i/FUNDS.length)*100));
-    
-    try {
-      const d = await fetchEstimate(f.code);
-      if (d && d.gszzl !== '' && d.gszzl !== undefined) {
-        const val = parseFloat(d.gszzl);
-        if (!isNaN(val)) {
-          cache[cacheKey(f.code, today)] = val;
-          updateCellUI(f.code, today, val);
-          ok++;
-          
-          // 同时存储估算净值用于实时总收益率计算
-          if (d.gsz && parseFloat(d.gsz) > 0) {
-            const estimatedNav = parseFloat(d.gsz);
-            // 用特殊key标记为估算值（今日日期+"_est"）
-            navCache[navCacheKey(f.code, todayISO)] = estimatedNav;
-            // 实时更新总收益率单元格
-            updateRetUI(f);
-          }
-        } else fail++;
+
+  // 并行批量获取（每批6只）
+  const codes = FUNDS.map(f => f.code);
+  const estimates = await fetchEstimatesBatch(codes);
+
+  FUNDS.forEach((f, idx) => {
+    const d = estimates[f.code];
+    if (d && d.gszzl !== '' && d.gszzl !== undefined) {
+      const val = parseFloat(d.gszzl);
+      if (!isNaN(val)) {
+        cache[cacheKey(f.code, today)] = val;
+        updateCellUI(f.code, today, val);
+        ok++;
+        // 同时存储估算净值用于实时总收益率计算
+        if (d.gsz && parseFloat(d.gsz) > 0) {
+          const estimatedNav = parseFloat(d.gsz);
+          navCache[navCacheKey(f.code, todayISO)] = estimatedNav;
+          updateRetUI(f);
+        }
       } else fail++;
-    } catch(e) { fail++; }
-  }
+    } else fail++;
+  });
   
   setCache(cache);
   setNavCache(navCache);
@@ -1181,16 +1132,14 @@ async function fetchTodayData() {
     fail > 0 ? 'err' : 'ok');
 }
 
-async function fetchAllHistory({ autoFetchToday = true } = {}) {
+async function fetchAllHistory({ autoFetchToday = true, force = false } = {}) {
   const btn = document.getElementById('fetchTodayBtn');
   const dot = document.getElementById('statusDot');
   btn.disabled = true;
   dot.className = 'dot loading';
 
-  // 使用北京时间（UTC+8）计算日期，避免 toISOString() 返回 UTC 日期导致少一天
   const endDate = bjTodayISO();
-  const sdBJ = bjNow(); sdBJ.setUTCDate(sdBJ.getUTCDate() - 60); // 扩大到60天确保覆盖
-  const startDate = `${sdBJ.getUTCFullYear()}-${String(sdBJ.getUTCMonth()+1).padStart(2,'0')}-${String(sdBJ.getUTCDate()).padStart(2,'0')}`;
+  const startDate = '2026-04-27';
 
   const cache = getCache();
   const navCache = getNavCache();
@@ -1200,11 +1149,29 @@ async function fetchAllHistory({ autoFetchToday = true } = {}) {
   const yesterdayBJ = new Date(bjNow().getTime() - 86400 * 1000);
   const yesterdayKeyStr = `${yesterdayBJ.getUTCMonth()+1}/${yesterdayBJ.getUTCDate()}`;
 
-  showProg('正在补全历史净值数据...', 0);
+  // ---- 增量缓存：检查哪些基金需要更新 ----
+  const lastTradingDay = getLastTradingDay();
+  const fundsToFetch = force ? FUNDS : FUNDS.filter(f => {
+    return cache[cacheKey(f.code, lastTradingDay)] === undefined;
+  });
 
-  for (let i = 0; i < FUNDS.length; i++) {
-    const f = FUNDS[i];
-    showProg(`补全 ${f.name.substring(0,8)} 历史数据... (${i+1}/${FUNDS.length})`, Math.round((i/FUNDS.length)*100));
+  if (fundsToFetch.length === 0 && !force) {
+    console.log('[fetchAllHistory] 所有基金最近交易日数据完整，跳过历史获取');
+    hideProg();
+    btn.disabled = false;
+    dot.className = 'dot ok';
+    document.getElementById('dataHealth').textContent = '✅ 数据已是最新';
+    document.getElementById('dataHealth').style.color = 'var(--green)';
+    if (autoFetchToday) setTimeout(() => fetchTodayData(), 300);
+    return;
+  }
+
+  console.log(`[fetchAllHistory] 需要更新 ${fundsToFetch.length}/${FUNDS.length} 支基金`);
+  showProg(`正在补全历史净值数据（${fundsToFetch.length}支）...`, 0);
+
+  for (let i = 0; i < fundsToFetch.length; i++) {
+    const f = fundsToFetch[i];
+    showProg(`补全 ${f.name.substring(0,8)}... (${i+1}/${fundsToFetch.length})`, Math.round((i/fundsToFetch.length)*100));
 
     try {
       const hist = await fetchHistory(f.code, startDate, endDate);
@@ -1239,8 +1206,6 @@ async function fetchAllHistory({ autoFetchToday = true } = {}) {
       failedFunds.push(f.code);
       console.error(`[fetchAllHistory] ${f.code} 获取失败:`, e.message);
     }
-
-    await sleep(150);
   }
 
   // 确保昨天日期在 displayDates 中
@@ -1402,18 +1367,7 @@ async function init() {
   renderCards();
   renderTable();
 
-  // 检查数据新鲜度：如果上次成功获取距今超过2天，强制清除旧缓存重拉
-  try {
-    const lastFetch = localStorage.getItem('fund_last_fetch');
-    if (lastFetch) {
-      const elapsed = Date.now() - new Date(lastFetch).getTime();
-      if (elapsed > 2 * 86400 * 1000) {
-        console.log('[init] 数据超过2天未更新，将强制重拉');
-      }
-    }
-  } catch(e) {}
-
-  // 每次打开都强制拉取历史（覆盖昨天及更早缺失数据），再刷今日估值
+  // 自动获取数据：增量缓存 + 并行估值
   setTimeout(async () => {
     toast('🔄 正在自动获取最新数据...', '');
     try {
@@ -1426,8 +1380,8 @@ async function init() {
       try { fetchTodayData(); } catch(e) {
         console.error('[init] fetchTodayData 出错:', e);
       }
-    }, 500);
-  }, 800);
+    }, 300);
+  }, 500);
 
   // 启动交易时间自动刷新
   startAutoRefresh();
