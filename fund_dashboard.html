@@ -1219,7 +1219,6 @@ async function fetchAllHistory({ autoFetchToday = true, force = false } = {}) {
   }
 
   // 数据验证：检查最近3个交易日是否有数据
-  const lastTradingDay = getLastTradingDay();
   const recentDates = DATES.filter(d => normDate(d) <= normDate(lastTradingDay)).slice(-3);
   let missingRecent = 0;
   recentDates.forEach(d => {
