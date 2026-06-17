@@ -201,6 +201,24 @@ td.today-td { background: rgba(88,166,255,0.04); }
 .bar-fill { height: 100%; border-radius: 2px; }
 .bar-num { font-size: 11px; color: var(--text); min-width: 26px; text-align: right; }
 
+.amount-input {
+  width: 72px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 11px;
+  padding: 3px 5px;
+  text-align: right;
+  outline: none;
+  transition: border-color 0.15s;
+  -moz-appearance: textfield;
+}
+.amount-input::-webkit-inner-spin-button,
+.amount-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.amount-input:focus { border-color: var(--blue); background: rgba(88,166,255,0.06); }
+.amount-input::placeholder { color: var(--muted); font-size: 10px; }
+
 .toast {
   position: fixed;
   bottom: 20px;
@@ -403,6 +421,24 @@ function getNavCache() {
 }
 function setNavCache(c) { localStorage.setItem('fund_nav_cache_v1', JSON.stringify(c)); }
 
+// ============================================================
+// 持仓金额持久化（localStorage）
+// key: "fund_amount_{code}"
+// ============================================================
+function loadAmount(code) {
+  const v = localStorage.getItem('fund_amount_' + code);
+  return v !== null ? parseFloat(v) : 0;
+}
+function saveAmount(code, val) {
+  const num = parseFloat(val);
+  if (isNaN(num) || num < 0) { localStorage.removeItem('fund_amount_' + code); }
+  else { localStorage.setItem('fund_amount_' + code, String(num)); }
+  // 更新 FUNDS 数组并重新渲染
+  const fund = FUNDS.find(f => f.code === code);
+  if (fund) fund.amount = isNaN(num) || num < 0 ? 0 : num;
+  renderCards();
+}
+
 // 从净值缓存中取最新净值（取最近日期）
 function getLatestNavFromCache(code) {
   const nc = getNavCache();
@@ -549,8 +585,8 @@ function calcWinRate(code, cache) {
 
 // ============================================================
 // 总评分模型（满分100）
-// 基于经典基金评价理论（Morning Star / 夏普体系）五维度加权
-// 权重：夏普比率25% + 总收益率20% + 最大回撤20% + 年化波动率15% + 胜率20%
+// 基于经典基金评价理论 五维度加权
+// 权重：夏普比率25% + 最大回撤20% + 卡尔玛比率15% + 修复天数20% + 胜率20%
 // ============================================================
 function calcTotalScore(f, cache, navCacheArg) {
   const nc = navCacheArg || getNavCache();
@@ -568,18 +604,7 @@ function calcTotalScore(f, cache, navCacheArg) {
     else                    sScore =  0;
   }
 
-  // 2. 总收益率 (20分) — 区间基准：>=30%:20, >=20%:16, >=10%:12, >=5%:8, >=0%:4, <0%:0
-  const dynRet = calcRet(f);
-  const retVal = dynRet !== null ? dynRet : (f.sumR || 0);
-  let rScore = 0;
-  if      (retVal >= 30) rScore = 20;
-  else if (retVal >= 20) rScore = 16;
-  else if (retVal >= 10) rScore = 12;
-  else if (retVal >= 5)  rScore =  8;
-  else if (retVal >= 0)  rScore =  4;
-  else                   rScore =  0;
-
-  // 3. 最大回撤 (20分) — 越小越好：>-5%:20, >-10%:16, >-15%:11, >-25%:6, <=−25%:0
+  // 2. 最大回撤 (20分) — 越小越好：>-5%:20, >-10%:16, >-15%:11, >-25%:6, <=−25%:0
   const maxdd = calcMaxDrawdown(f, nc, c);
   let dScore = 0;
   if (maxdd !== null) {
@@ -590,15 +615,28 @@ function calcTotalScore(f, cache, navCacheArg) {
     else                  dScore =  0;
   }
 
-  // 4. 年化波动率 (15分) — 越低越好：<15%:15, <20%:12, <30%:8, <40%:4, >=40%:0
-  const vol = calcVolatility(f.code, c);
-  let vScore = 0;
-  if (vol !== null) {
-    if      (vol < 15) vScore = 15;
-    else if (vol < 20) vScore = 12;
-    else if (vol < 30) vScore =  8;
-    else if (vol < 40) vScore =  4;
-    else               vScore =  0;
+  // 3. 卡尔玛比率 (15分) — 越大越好：>=3:15, >=2:13, >=1:10, >=0.5:6, >=0:3, <0:0
+  const calmar = calcCalmar(f, nc, c);
+  let cScore = 0;
+  if (calmar !== null) {
+    if      (calmar >= 3)   cScore = 15;
+    else if (calmar >= 2)   cScore = 13;
+    else if (calmar >= 1)   cScore = 10;
+    else if (calmar >= 0.5) cScore =  6;
+    else if (calmar >= 0)   cScore =  3;
+    else                    cScore =  0;
+  }
+
+  // 4. 修复天数 (20分) — 越短越好：<=3天:20, <=7:16, <=14:11, <=21:6, 未恢复:0
+  const recovery = calcRecoveryDays(f, nc, c);
+  let rScore = 0;
+  if (recovery !== null) {
+    if      (recovery > 0 && recovery <= 3)  rScore = 20;
+    else if (recovery > 0 && recovery <= 7)  rScore = 16;
+    else if (recovery > 0 && recovery <= 14) rScore = 11;
+    else if (recovery > 0 && recovery <= 21) rScore =  6;
+    else if (recovery > 0)                   rScore =  3;
+    // recovery <= 0 (未恢复) 得0分
   }
 
   // 5. 胜率 (20分) — >=65%:20, >=60%:17, >=55%:13, >=50%:9, >=45%:5, <45%:0
@@ -613,12 +651,28 @@ function calcTotalScore(f, cache, navCacheArg) {
     else               wScore =  0;
   }
 
-  const total = sScore + rScore + dScore + vScore + wScore;
-  return { total, sScore, rScore, dScore, vScore, wScore };
+  const total = sScore + dScore + cScore + rScore + wScore;
+  return { total, sScore, dScore, cScore, rScore, wScore };
 }
 
 // 5. 修复天数 = 最大回撤后净值恢复到前高所需交易日数
 // 返回 null 无数据 / 数字 已恢复 / 负数 未恢复(取绝对值=距谷底天数)
+
+// 6. 卡尔玛比率 = 年化收益率 / |最大回撤|（越大越好）
+function calcCalmar(f, navCache, cache) {
+  const nc = navCache || getNavCache();
+  const c  = cache || getCache();
+  const maxdd = calcMaxDrawdown(f, nc, c);
+  if (maxdd === null || maxdd >= 0 || maxdd === 0) return null; // 无回撤时无意义
+  const returns = getDailyReturns(f.code, c);
+  if (returns.length < 5) return null;
+  let cumulative = 1;
+  returns.forEach(r => cumulative *= (1 + r));
+  const days = returns.length;
+  const annualReturn = Math.pow(cumulative, 252 / days) - 1;
+  return annualReturn / Math.abs(maxdd);
+}
+
 function calcRecoveryDays(f, navCache, cache) {
   const series = getNavSeries(f, navCache, cache);
   if (series.length < 3) return null;
@@ -808,6 +862,7 @@ function getSortedFunds() {
       case 'sharpe': return calcSharpe(f.code, cache) ?? null;
       case 'maxdd': return calcMaxDrawdown(f, getNavCache(), cache) ?? null;
       case 'recovery': return calcRecoveryDays(f, getNavCache(), cache) ?? null;
+      case 'calmar': return calcCalmar(f, getNavCache(), cache) ?? null;
       case 'vol': return calcVolatility(f.code, cache) ?? null;
       case 'winrate': return calcWinRate(f.code, cache) ?? null;
       case 'score': return calcTotalScore(f, cache, getNavCache()).total ?? null;
@@ -888,7 +943,9 @@ function renderCards() {
   // 今日收益汇总（有持仓金额的基金才计入）
   let todayGain = 0, hasTodayGain = false;
   FUNDS.forEach(f => {
-    if (!f.amount) return;
+    const amt = f.amount || loadAmount(f.code);
+    if (!amt) return;
+    f.amount = amt;
     const v = cache[cacheKey(f.code, today)];
     if (v != null) {
       todayGain += f.amount * v / 100;
@@ -1002,9 +1059,10 @@ function renderTable() {
     <th class="model-col ${sortCls('sharpe')}" style="min-width:64px" onclick="setSort('sharpe')" title="(年化收益−Rf)/年化波动率，>1优秀">夏普<div class="model-sub">比率</div></th>
     <th class="model-col ${sortCls('maxdd')}" style="min-width:64px" onclick="setSort('maxdd')" title="区间最大净值回撤，越小越稳">最大<div class="model-sub">回撤</div></th>
     <th class="model-col ${sortCls('recovery')}" style="min-width:58px" onclick="setSort('recovery')" title="最大回撤后恢复到前高所需交易日数">修复<div class="model-sub">天数</div></th>
+    <th class="model-col ${sortCls('calmar')}" style="min-width:68px" onclick="setSort('calmar')" title="年化收益率/|最大回撤|，>2优秀">卡尔玛<div class="model-sub">比率</div></th>
     <th class="model-col ${sortCls('vol')}" style="min-width:68px" onclick="setSort('vol')" title="日收益年化标准差，<20%稳定">年化<div class="model-sub">波动率</div></th>
     <th class="model-col ${sortCls('winrate')}" style="min-width:54px" onclick="setSort('winrate')" title="盈利天数占比，>60%优秀">胜率</th>
-    <th class="model-col ${sortCls('score')}" style="min-width:66px" onclick="setSort('score')" title="综合评分：夏普25%+收益率20%+最大回撤20%+波动率15%+胜率20%，满分100">总评分</th>
+    <th class="model-col ${sortCls('score')}" style="min-width:66px" onclick="setSort('score')" title="综合评分：夏普25%+回撤20%+卡尔玛15%+修复20%+胜率20%，满分100">总评分</th>
     <th class="${sortCls('amount')}" style="min-width:80px" onclick="setSort('amount')">持仓金额</th>
     <th class="${sortCls('buy')}" style="min-width:76px" onclick="setSort('buy')">收益能力</th>
     <th class="${sortCls('def')}" style="min-width:76px" onclick="setSort('def')">防守能力</th>
@@ -1039,6 +1097,7 @@ function renderTable() {
     const vol = calcVolatility(f.code, cache);
     const wr = calcWinRate(f.code, cache);
     const recovery = calcRecoveryDays(f, navCacheAll, cache);
+    const calmar = calcCalmar(f, navCacheAll, cache);
     const scoreData = calcTotalScore(f, cache, navCacheAll);
     
     const sharpeHtml = sharpe !== null
@@ -1052,6 +1111,9 @@ function renderTable() {
         ? `<span class="${recovery <= 3 ? 'model-good' : recovery <= 10 ? 'model-mid' : 'model-bad'}">${recovery}天</span>`
         : `<span class="model-bad" title="尚未恢复，距谷底已${-recovery}天">未恢复</span>`
       : '<span class="pct na">—</span>';
+    const calmarHtml = calmar !== null
+      ? `<span class="${calmar >= 2 ? 'model-good' : calmar >= 1 ? 'model-mid' : 'model-bad'}">${calmar.toFixed(2)}</span>`
+      : '<span class="pct na">—</span>';
     const volHtml = vol !== null
       ? `<span class="${vol < 20 ? 'model-good' : vol < 40 ? 'model-mid' : 'model-bad'}">${vol.toFixed(1)}%</span>`
       : '<span class="pct na">—</span>';
@@ -1061,12 +1123,13 @@ function renderTable() {
 
     // 总评分
     const sc = scoreData.total;
-    const scoreHtml = `<span class="${sc >= 75 ? 'model-good' : sc >= 55 ? 'model-mid' : 'model-bad'}" title="夏普:${scoreData.sScore} 收益:${scoreData.rScore} 回撤:${scoreData.dScore} 波动:${scoreData.vScore} 胜率:${scoreData.wScore}">${sc}</span>`;
+    const scoreHtml = `<span class="${sc >= 75 ? 'model-good' : sc >= 55 ? 'model-mid' : 'model-bad'}" title="夏普:${scoreData.sScore} 回撤:${scoreData.dScore} 卡尔玛:${scoreData.cScore} 修复:${scoreData.rScore} 胜率:${scoreData.wScore}">${sc}</span>`;
 
-    // 持仓金额
-    const amountHtml = f.amount > 0
-      ? `<span style="color:var(--text);font-size:12px">${(f.amount/10000).toFixed(2)}<span style="color:var(--muted);font-size:10px">万</span></span>`
-      : '<span style="color:var(--muted);font-size:11px">—</span>';
+    // 持仓金额 — 可编辑输入框，存localStorage
+    const storedAmount = loadAmount(f.code);
+    const amountVal = storedAmount || 0;
+    f.amount = amountVal;
+    const amountHtml = `<input type="number" class="amount-input" data-code="${f.code}" value="${amountVal > 0 ? amountVal : ''}" placeholder="金额" min="0" step="100" onchange="saveAmount('${f.code}', this.value)">`;
     
     // 盈利/亏损天数
     const ud = calcUpDownDays(f);
@@ -1117,6 +1180,7 @@ function renderTable() {
       <td>${sharpeHtml}</td>
       <td>${maxddHtml}</td>
       <td>${recHtml}</td>
+      <td>${calmarHtml}</td>
       <td>${volHtml}</td>
       <td>${wrHtml}</td>
       <td>${scoreHtml}</td>
