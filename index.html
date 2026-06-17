@@ -71,10 +71,10 @@ body {
 .main { padding: 14px 16px; overflow-x: auto; }
 .cards {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 10px;
   margin-bottom: 14px;
-  min-width: 700px;
+  min-width: 800px;
 }
 .card {
   background: var(--card);
@@ -270,6 +270,8 @@ td.today-td { background: rgba(88,166,255,0.04); }
     <span id="updateTime" style="font-size:11px;color:var(--muted)">—</span>
     <span class="dot" id="statusDot"></span>
     <span id="dataHealth" style="font-size:10px;color:var(--muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+    <button class="btn" onclick="showAddFundDialog()">➕ 添加基金</button>
+    <button class="btn" onclick="showRecycleBin()">🗑️ 回收站</button>
     <button class="btn" onclick="fetchAllHistory({force:true})">📅 补全历史数据</button>
     <button class="btn primary" id="fetchTodayBtn" onclick="fetchTodayData()">⟳ 获取今日涨跌幅</button>
   </div>
@@ -399,6 +401,263 @@ const FUNDS = [
   {seq:23, name:"德邦鑫星价值灵活配置混合A", code:"001412", buy:87.81, def:22.95, tag:null, sNav:5.1369, latestNav:null, ret:null, days:18, sumR:22.06, up:13, dn:5, avg:1.225, amount:0, dr:[0.67,-1.48,1.13,0.35,0.37,6.09,0.67,3.33,2.24,3.94,-1.88,-2.1,0.26,-1.63,0.92,-4.25,6.41,5.51,0.31,-1.09,2.86,-1.66,-5.74,5.83,4.29,0.96,-4.43,-3.96]},
   {seq:24, name:"前海开源沪港深乐享生活灵活配置混合", code:"004320", buy:92.45, def:46.09, tag:null, sNav:5.5573, latestNav:null, ret:null, days:18, sumR:18.28, up:13, dn:5, avg:1.016, amount:0, dr:[0.86,-2.36,0.58,1.14,2.2,5.05,3.33,3.37,1.26,3,-0.96,-2.69,0.55,-0.4,1.38,-6.11,5.42,3.8,-1.19,-0.16,4.16,-2.39,-6.16,5.07,5.34,-0.2,-3.41,-4.9]}
 ];
+
+// ============================================================
+// 基金增减管理 + 回收站（localStorage）
+// ============================================================
+const RECYCLE_KEY = 'fund_recycle_bin';
+const HIDDEN_KEY = 'fund_hidden_codes';
+
+function getHiddenCodes() {
+  try { return JSON.parse(localStorage.getItem(HIDDEN_KEY) || '[]'); } catch { return []; }
+}
+function setHiddenCodes(arr) { localStorage.setItem(HIDDEN_KEY, JSON.stringify(arr)); }
+
+function getActiveFunds() {
+  const hidden = getHiddenCodes();
+  return FUNDS.filter(f => !hidden.includes(f.code));
+}
+
+function getRecycledFunds() {
+  const hidden = getHiddenCodes();
+  return FUNDS.filter(f => hidden.includes(f.code));
+}
+
+function removeFund(code) {
+  const hidden = getHiddenCodes();
+  if (!hidden.includes(code)) {
+    hidden.push(code);
+    setHiddenCodes(hidden);
+  }
+  renderAll();
+}
+
+function restoreFund(code) {
+  const hidden = getHiddenCodes().filter(c => c !== code);
+  setHiddenCodes(hidden);
+  renderAll();
+}
+
+// 搜索基金（通过名称或代码）
+async function addFundBySearch(query) {
+  const q = query.trim();
+  if (!q) return null;
+  // 先检查是否已在列表中
+  const existing = FUNDS.find(f => f.code === q || f.name.includes(q));
+  if (existing) {
+    // 如果在回收站，先恢复
+    const hidden = getHiddenCodes();
+    if (hidden.includes(existing.code)) {
+      restoreFund(existing.code);
+      return existing;
+    }
+    alert(`该基金已在看板中：${existing.name} (${existing.code})`);
+    return null;
+  }
+  // 通过东方财富API搜索基金信息
+  try {
+    const info = await fetchFundInfo(q);
+    if (!info) { alert('未找到该基金，请检查名称或代码'); return null; }
+    // 构建新的FUNDS条目
+    const newFund = {
+      seq: FUNDS.length + 1,
+      name: info.name,
+      code: info.code,
+      buy: null, def: null, tag: null,
+      sNav: info.nav || 1, // 起始净值
+      latestNav: null, ret: null, days: 0, sumR: 0, up: 0, dn: 0, avg: 0,
+      amount: 0, dr: []
+    };
+    FUNDS.push(newFund);
+    // 拉取历史数据填充
+    await fetchAllHistory();
+    renderAll();
+    return newFund;
+  } catch(e) {
+    console.error('[addFundBySearch]', e);
+    alert('添加基金失败：' + e.message);
+    return null;
+  }
+}
+
+// 通过天天基金搜索接口获取基金基本信息
+async function fetchFundInfo(query) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    // 使用基金搜索接口（按代码或名称精确查询）
+    const searchUrl = query.match(/^\d{6}$/)
+      ? `https://fundgz.1234567.com.cn/js/${query}.js`
+      : `https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx?m=1&key=${encodeURIComponent(query)}`;
+    script.src = searchUrl;
+    let done = false;
+    const timeout = setTimeout(() => {
+      if (done) return;
+      done = true;
+      cleanup();
+      reject(new Error('搜索超时'));
+    }, 8000);
+
+    function cleanup() {
+      clearTimeout(timeout);
+      try { document.head.removeChild(script); } catch(e) {}
+      delete window.jsonpgz;
+      delete window.FundSearch;
+    }
+
+    script.onload = () => {
+      if (done) return;
+      done = true;
+      // 如果是代码搜索（jsonpgz回调）
+      if (window.jsonpgz && window.jsonpgz.fundcode) {
+        const d = window.jsonpgz;
+        cleanup();
+        resolve({ code: d.fundcode, name: d.name, nav: parseFloat(d.dwjz) || null });
+        return;
+      }
+      // 如果是名称搜索（FundSearch回调）
+      if (window.FundSearch && window.FundSearch.Datas) {
+        const datas = window.FundSearch.Datas;
+        if (datas.length > 0) {
+          const first = datas[0];
+          cleanup();
+          resolve({ code: first.CODE, name: first.NAME, nav: null });
+          return;
+        }
+      }
+      cleanup();
+      resolve(null);
+    };
+    script.onerror = () => {
+      if (done) return;
+      done = true;
+      cleanup();
+      // 代码搜索失败时，尝试名称搜索
+      if (query.match(/^\d{6}$/)) {
+        // 直接用F10DataApi试一下
+        fetchFundInfoByCode(query).then(resolve).catch(reject);
+      } else {
+        resolve(null);
+      }
+    };
+    document.head.appendChild(script);
+  });
+}
+
+async function fetchFundInfoByCode(code) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = `https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code=${code}&page=1&sdate=2026-04-27&edate=2026-06-17&per=3`;
+    let done = false;
+    const timeout = setTimeout(() => {
+      if (done) return; done = true;
+      cleanup(); reject(new Error('F10 timeout'));
+    }, 8000);
+    function cleanup() {
+      clearTimeout(timeout);
+      try { document.head.removeChild(script); } catch(e) {}
+      delete window.apidata;
+    }
+    script.onload = () => {
+      if (done) return; done = true;
+      try {
+        const raw = window.apidata;
+        if (!raw || !raw.content) { cleanup(); resolve(null); return; }
+        const tmp = document.createElement('div');
+        tmp.innerHTML = raw.content;
+        const rows = tmp.querySelectorAll('tbody tr');
+        if (rows.length === 0) { cleanup(); resolve(null); return; }
+        // 从标题或第一行获取基金名
+        const nameEl = raw.content.match(/<t[h][^>]*>([^<]+)/);
+        let name = nameEl ? nameEl[1].trim() : code;
+        const firstRow = rows[rows.length - 1]; // 最新记录
+        const cells = firstRow.querySelectorAll('td');
+        const nav = cells.length >= 2 ? parseFloat(cells[1].textContent.trim()) : null;
+        cleanup();
+        resolve({ code, name, nav });
+      } catch(e) { cleanup(); reject(e); }
+    };
+    document.head.appendChild(script);
+  });
+}
+
+function renderAll() {
+  renderCards();
+  renderTable();
+}
+
+// 弹窗：添加基金
+function showAddFundDialog() {
+  const overlay = document.createElement('div');
+  overlay.id = 'addFundOverlay';
+  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:999;display:flex;align-items:center;justify-content:center';
+  overlay.innerHTML = `
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;width:380px;max-width:90vw">
+      <h3 style="margin:0 0 16px;font-size:16px;color:var(--text)">添加基金</h3>
+      <div style="margin-bottom:12px">
+        <input id="addFundInput" type="text" placeholder="输入基金代码（如006533）或名称关键词" style="width:100%;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:rgba(255,255,255,0.05);color:var(--text);font-size:13px;outline:none">
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn" onclick="closeAddFundDialog()">取消</button>
+        <button class="btn primary" onclick="doAddFund()">添加</button>
+      </div>
+      <div id="addFundStatus" style="margin-top:10px;font-size:11px;color:var(--muted)"></div>
+    </div>`;
+  document.body.appendChild(overlay);
+  document.getElementById('addFundInput').focus();
+}
+
+function closeAddFundDialog() {
+  const overlay = document.getElementById('addFundOverlay');
+  if (overlay) overlay.remove();
+}
+
+async function doAddFund() {
+  const input = document.getElementById('addFundInput');
+  const status = document.getElementById('addFundStatus');
+  const q = input.value.trim();
+  if (!q) { status.textContent = '请输入基金代码或名称'; status.style.color = 'var(--red)'; return; }
+  status.textContent = '搜索中...'; status.style.color = 'var(--muted)';
+  const result = await addFundBySearch(q);
+  if (result) {
+    status.textContent = `已添加：${result.name} (${result.code})`; status.style.color = 'var(--green)';
+    setTimeout(() => closeAddFundDialog(), 1200);
+  }
+}
+
+// 弹窗：回收站
+function showRecycleBin() {
+  const recycled = getRecycledFunds();
+  const overlay = document.createElement('div');
+  overlay.id = 'recycleOverlay';
+  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:999;display:flex;align-items:center;justify-content:center';
+  const listHtml = recycled.length > 0
+    ? recycled.map(f => `
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+          <span style="color:var(--text);font-size:13px">${f.name} <span style="color:var(--muted);font-size:11px">(${f.code})</span></span>
+          <button class="btn" style="font-size:11px;padding:4px 8px" onclick="doRestore('${f.code}')">恢复</button>
+        </div>`).join('')
+    : '<div style="color:var(--muted);text-align:center;padding:20px">回收站为空</div>';
+  overlay.innerHTML = `
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;width:420px;max-width:90vw">
+      <h3 style="margin:0 0 16px;font-size:16px;color:var(--text)">🗑️ 回收站</h3>
+      <div style="max-height:300px;overflow-y:auto">${listHtml}</div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+        <button class="btn" onclick="closeRecycleBin()">关闭</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+}
+
+function closeRecycleBin() {
+  const overlay = document.getElementById('recycleOverlay');
+  if (overlay) overlay.remove();
+}
+
+function doRestore(code) {
+  restoreFund(code);
+  closeRecycleBin();
+  if (getRecycledFunds().length > 0) showRecycleBin(); // 如果还有回收的，刷新弹窗
+}
 
 // ============================================================
 // 缓存工具
@@ -822,7 +1081,7 @@ async function fetchEstimatesBatch(fundCodes) {
 // 渲染
 // ============================================================
 let displayDates = [];
-let sortCol = 'upDays';    // 当前排序列（默认：盈利天数降序）
+let sortCol = 'score';     // 当前排序列（默认：总评分降序）
 let sortDir = 'desc';    // 排序方向: asc / desc
 
 // 计算某基金从4/27到当天的盈利天数/亏损天数
@@ -844,9 +1103,9 @@ function calcUpDownDays(f) {
   return { up, dn };
 }
 
-// 对基金列表排序
+// 对基金列表排序（仅活跃基金）
 function getSortedFunds() {
-  const list = [...FUNDS];
+  const list = [...getActiveFunds()];
   const cache = getCache();
   const today = todayKey();
   
@@ -939,61 +1198,58 @@ function renderCards() {
   const today = todayKey();
   const todayN = normDate(today);
   const cache = getCache();
-  
+  const activeFunds = getActiveFunds();
+
   // 今日收益汇总（有持仓金额的基金才计入）
   let todayGain = 0, hasTodayGain = false;
-  FUNDS.forEach(f => {
+  activeFunds.forEach(f => {
     const amt = f.amount || loadAmount(f.code);
     if (!amt) return;
     f.amount = amt;
     const v = cache[cacheKey(f.code, today)];
     if (v != null) {
-      todayGain += f.amount * v / 100;
+      todayGain += amt * v / 100;
       hasTodayGain = true;
     }
   });
-  // 总持仓金额
-  const totalAmount = FUNDS.reduce((s, f) => s + (f.amount || 0), 0);
+  const totalAmount = activeFunds.reduce((s, f) => s + (f.amount || loadAmount(f.code) || 0), 0);
 
-  const n = FUNDS.length;
-  
-  // 动态计算平均总收益率（优先用latestNav，否则用固定sumR）
-  let retSum = 0, retCount = 0;
-  FUNDS.forEach(f => {
-    const dynRet = calcRet(f);
-    if (dynRet !== null) { retSum += dynRet; retCount++; }
-    else if (f.sumR != null) { retSum += f.sumR; retCount++; }
-  });
-  const avgRet = retCount > 0 ? (retSum / retCount).toFixed(1) : '—';
-  
+  // 今日行情：涨/跌/待
   let up=0, dn=0, noData=0;
-  FUNDS.forEach(f => {
+  activeFunds.forEach(f => {
     const v = cache[cacheKey(f.code, today)];
     if (v == null) noData++;
     else if (v > 0) up++;
     else if (v < 0) dn++;
   });
-  
-  // 动态排序找最强/最弱
-  const withRet = FUNDS.map(f => {
-    const dynRet = calcRet(f);
-    return { ...f, dynRet: dynRet !== null ? dynRet : (f.sumR || 0) };
-  });
-  const best = [...withRet].sort((a,b)=>b.dynRet-a.dynRet)[0];
-  const worst = [...withRet].sort((a,b)=>a.dynRet-b.dynRet)[0];
-  
+
+  // 今日涨幅排序（前5最亮眼，后5最需努力）
+  const withToday = activeFunds.map(f => ({
+    name: f.name, code: f.code, v: cache[cacheKey(f.code, today)]
+  })).filter(x => x.v != null);
+  const sortedUp = [...withToday].sort((a,b) => b.v - a.v);
+  const top5 = sortedUp.slice(0, 5);
+  const bottom5 = [...sortedUp].sort((a,b) => a.v - b.v).slice(0, 5);
+
+  const top5Html = top5.map(x =>
+    `<div style="display:flex;justify-content:space-between;padding:1px 0;font-size:11px">
+      <span style="color:var(--muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${x.name.length > 8 ? x.name.substring(0,8)+'…' : x.name}</span>
+      <span style="color:var(--red);font-weight:600">+${x.v.toFixed(2)}%</span>
+    </div>`
+  ).join('');
+  const bottom5Html = bottom5.map(x =>
+    `<div style="display:flex;justify-content:space-between;padding:1px 0;font-size:11px">
+      <span style="color:var(--muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${x.name.length > 8 ? x.name.substring(0,8)+'…' : x.name}</span>
+      <span style="color:var(--green);font-weight:600">${x.v.toFixed(2)}%</span>
+    </div>`
+  ).join('');
+
   document.getElementById('cards').innerHTML = `
     <div class="card">
-      <div class="card-label">持仓基金</div>
-      <div class="card-val" style="color:var(--blue)">${n} 支</div>
-      <div class="card-sub">统计区间：4/27 起</div>
+      <div class="card-label">持仓总金额</div>
+      <div class="card-val" style="color:var(--blue)">${totalAmount > 0 ? (totalAmount/10000).toFixed(2) + ' 万' : '—'}</div>
+      <div class="card-sub">${activeFunds.length} 支基金 · 统计区间 4/27 起</div>
     </div>
-    <div class="card">
-      <div class="card-label">平均总收益率</div>
-      <div class="card-val" style="color:var(--red)">+${avgRet}%</div>
-      <div class="card-sub">自4/27 至最新净值日</div>
-    </div>
-    ${totalAmount > 0 ? `
     <div class="card">
       <div class="card-label">今日收益</div>
       <div class="card-val" style="color:${hasTodayGain ? (todayGain >= 0 ? 'var(--red)' : 'var(--green)') : 'var(--muted)'}">
@@ -1002,22 +1258,6 @@ function renderCards() {
       <div class="card-sub">基于持仓金额估算</div>
     </div>
     <div class="card">
-      <div class="card-label">总持仓金额</div>
-      <div class="card-val" style="color:var(--blue)">${(totalAmount/10000).toFixed(2)} 万</div>
-      <div class="card-sub">已填写持仓金额基金</div>
-    </div>` : `
-    <div class="card">
-      <div class="card-label">今日行情</div>
-      <div class="card-val">
-        <span style="color:var(--red)">涨${up}</span>
-        <span style="color:var(--muted);font-size:14px"> / </span>
-        <span style="color:var(--green)">跌${dn}</span>
-        <span style="color:var(--muted);font-size:14px"> / </span>
-        <span style="color:var(--muted);font-size:14px">待${noData}</span>
-      </div>
-      <div class="card-sub">${today} 估算数据</div>
-    </div>`}
-    <div class="card">
       <div class="card-label">今日行情</div>
       <div class="card-val">
         <span style="color:var(--red)">涨${up}</span>
@@ -1029,13 +1269,16 @@ function renderCards() {
       <div class="card-sub">${today} 估算数据</div>
     </div>
     <div class="card">
-      <div class="card-label">最强 / 最弱</div>
-      <div class="card-val" style="font-size:14px">
-        <span style="color:var(--red)">+${best.dynRet.toFixed(1)}%</span>
-        <span style="color:var(--muted);font-size:12px"> / </span>
-        <span style="color:${worst.dynRet >= 0 ? 'var(--red)' : 'var(--green)'}">+${worst.dynRet.toFixed(1)}%</span>
+      <div class="card-label">🔥 今日最亮眼</div>
+      <div class="card-val" style="font-size:12px;line-height:1.4">
+        ${top5.length > 0 ? top5Html : '<span style="color:var(--muted)">暂无数据</span>'}
       </div>
-      <div class="card-sub">${best.name.substring(0,5)} / ${worst.name.substring(0,5)}</div>
+    </div>
+    <div class="card">
+      <div class="card-label">💪 今日最需努力</div>
+      <div class="card-val" style="font-size:12px;line-height:1.4">
+        ${bottom5.length > 0 ? bottom5Html : '<span style="color:var(--muted)">暂无数据</span>'}
+      </div>
     </div>
   `;
 }
@@ -1172,8 +1415,13 @@ function renderTable() {
     
     return `<tr>
       <td class="name-col">
-        <div class="fname">${f.name}${tagHtml}</div>
-        <div class="fcode">${f.code}</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:4px">
+          <div>
+            <div class="fname">${f.name}${tagHtml}</div>
+            <div class="fcode">${f.code}</div>
+          </div>
+          <span style="cursor:pointer;color:var(--muted);font-size:12px;opacity:0.6;padding:2px" onclick="removeFund('${f.code}')" title="移至回收站">✕</span>
+        </div>
       </td>
       <td>${f.code}</td>
       <td><span class="${retCls}" id="ret_${f.code}" ${navTip}>${retSign}${retVal.toFixed(2)}%</span></td>
@@ -1195,7 +1443,7 @@ function renderTable() {
   }).join('');
   
   document.getElementById('tbody').innerHTML = rows;
-  document.getElementById('cnt').textContent = FUNDS.length;
+  document.getElementById('cnt').textContent = getActiveFunds().length;
 
   // 更新数据健康状态
   updateDataHealth();
@@ -1225,7 +1473,7 @@ function setSort(col) {
 }
 
 function resetSort() {
-  sortCol = 'upDays';
+  sortCol = 'score';
   sortDir = 'desc';
   document.getElementById('sortInfo').textContent = '';
   renderTable();
@@ -1280,11 +1528,11 @@ async function fetchTodayData() {
   let ok = 0, fail = 0;
   showProg('正在获取今日估算涨跌幅...', 0);
 
-  // 并行批量获取（每批6只）
-  const codes = FUNDS.map(f => f.code);
+  // 并行批量获取（每批6只，仅活跃基金）
+  const codes = getActiveFunds().map(f => f.code);
   const estimates = await fetchEstimatesBatch(codes);
 
-  FUNDS.forEach((f, idx) => {
+  getActiveFunds().forEach((f, idx) => {
     const d = estimates[f.code];
     if (d && d.gszzl !== '' && d.gszzl !== undefined) {
       const val = parseFloat(d.gszzl);
@@ -1340,7 +1588,7 @@ async function fetchAllHistory({ autoFetchToday = true, force = false } = {}) {
 
   // ---- 增量缓存：检查哪些基金需要更新 ----
   const lastTradingDay = getLastTradingDay();
-  const fundsToFetch = force ? FUNDS : FUNDS.filter(f => {
+  const fundsToFetch = force ? getActiveFunds() : getActiveFunds().filter(f => {
     return cache[cacheKey(f.code, lastTradingDay)] === undefined;
   });
 
@@ -1412,7 +1660,7 @@ async function fetchAllHistory({ autoFetchToday = true, force = false } = {}) {
   let missingRecent = 0;
   recentDates.forEach(d => {
     let hasAny = false;
-    FUNDS.forEach(f => {
+    getActiveFunds().forEach(f => {
       if (cache[cacheKey(f.code, d)] !== undefined) hasAny = true;
     });
     if (!hasAny) missingRecent++;
@@ -1475,7 +1723,7 @@ function updateDataHealth() {
   let filled = 0;
   recentDates.forEach(d => {
     let hasAny = false;
-    FUNDS.forEach(f => {
+    getActiveFunds().forEach(f => {
       if (cache[cacheKey(f.code, d)] !== undefined) hasAny = true;
     });
     if (hasAny) filled++;
