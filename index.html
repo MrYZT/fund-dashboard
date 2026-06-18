@@ -91,6 +91,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: auto;
+  max-height: calc(100vh - 260px);
 }
 .table-caption {
   padding: 8px 14px;
@@ -1929,7 +1930,7 @@ function renderCards() {
     ${todayRateHtml}
     <div class="card">
       <div class="card-label">持仓总金额${isAccountView ? ' · '+accName : ''}</div>
-      <div class="card-val" style="color:var(--blue)">${totalAmount > 0 ? (totalAmount/10000).toFixed(2) + ' 万' : '—'}</div>
+      <div class="card-val" style="color:var(--blue)">${totalAmount > 0 ? '¥' + totalAmount.toLocaleString('zh-CN') : '—'}</div>
       <div class="card-sub">${displayFunds.length} 支基金 · 统计区间 ${startLabel} 起</div>
     </div>
     <div class="card">
@@ -2061,7 +2062,7 @@ function renderTable() {
     // 持仓金额 — 点击弹窗调整，多账户管理
     const amountVal = getFundAmount(f.code, currentAccountId);
     f.amount = amountVal;
-    const amountDisplay = amountVal > 0 ? (amountVal >= 10000 ? (amountVal/10000).toFixed(2)+'万' : amountVal.toLocaleString()) : '点击设置';
+    const amountDisplay = amountVal > 0 ? '¥' + amountVal.toLocaleString('zh-CN') : '点击设置';
     const amountColor = amountVal > 0 ? 'var(--text)' : 'var(--muted)';
     const amountHtml = `<span style="cursor:pointer;color:${amountColor};font-size:12px;padding:3px 6px;border-radius:4px;border:1px solid var(--border);background:rgba(255,255,255,0.03)" onclick="showAmountDialog('${f.code}','${f.name.replace(/'/g,'\\\'')}')">${amountDisplay}</span>`;
     
