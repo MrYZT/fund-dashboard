@@ -257,6 +257,114 @@ td.today-td { background: rgba(88,166,255,0.04); }
 .progress-overlay.show { display: block; }
 .prog-bar-outer { background: rgba(255,255,255,0.08); border-radius: 4px; height: 4px; margin-top: 8px; overflow: hidden; }
 .prog-bar-inner { height: 100%; background: var(--blue); border-radius: 4px; transition: width 0.3s; }
+
+/* 账户切换 tab 栏 */
+.account-bar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 8px 16px;
+  background: rgba(22,27,34,0.6);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.account-tab {
+  padding: 4px 12px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.account-tab:hover { border-color: var(--blue); color: var(--text); }
+.account-tab.active { background: var(--blue); border-color: var(--blue); color: #fff; font-weight: 600; }
+.account-tab.manage { border-style: dashed; color: var(--muted); }
+.account-tab.manage:hover { border-color: var(--blue); color: var(--blue); }
+
+/* 日期选择器 */
+.date-picker-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.date-picker-wrap input[type="date"] {
+  background: #21262d;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 8px;
+  outline: none;
+  cursor: pointer;
+  color-scheme: dark;
+}
+.date-picker-wrap input[type="date"]:hover { border-color: var(--blue); }
+.date-picker-wrap input[type="date"]:focus { border-color: var(--blue); }
+.date-picker-reset {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.date-picker-reset:hover { color: var(--text); }
+
+/* 弹窗通用 */
+.modal-overlay {
+  position: fixed; top:0; left:0; width:100%; height:100%;
+  background: rgba(0,0,0,0.55);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.modal-box {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  width: 420px;
+  max-width: 92vw;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+.modal-title { font-size: 16px; font-weight: 600; margin: 0 0 16px; color: var(--text); }
+.modal-footer { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+/* 账户金额输入行 */
+.acc-amount-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 0; border-bottom: 1px solid rgba(48,54,61,0.6);
+}
+.acc-amount-row:last-child { border-bottom: none; }
+.acc-name-badge {
+  display: inline-block;
+  background: rgba(88,166,255,0.12);
+  color: var(--blue);
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  min-width: 70px;
+  text-align: center;
+}
+.acc-amount-input {
+  flex: 1;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 5px 8px;
+  outline: none;
+  text-align: right;
+}
+.acc-amount-input:focus { border-color: var(--blue); }
+.acc-total-hint { font-size: 11px; color: var(--muted); white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -267,6 +375,11 @@ td.today-td { background: rgba(88,166,255,0.04); }
     <div class="header-sub" id="headerSub">数据来源：东方财富 · 涨跌幅单位：% · 交易时间每5分钟自动刷新</div>
   </div>
   <div class="actions">
+    <div class="date-picker-wrap">
+      <span>统计起始</span>
+      <input type="date" id="statStartDate" value="2026-04-27" min="2026-04-27" onchange="onStatStartChange(this.value)">
+      <span class="date-picker-reset" onclick="resetStatStart()" title="恢复默认4/27">↺</span>
+    </div>
     <span id="updateTime" style="font-size:11px;color:var(--muted)">—</span>
     <span class="dot" id="statusDot"></span>
     <span id="dataHealth" style="font-size:10px;color:var(--muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
@@ -276,6 +389,9 @@ td.today-td { background: rgba(88,166,255,0.04); }
     <button class="btn primary" id="fetchTodayBtn" onclick="fetchTodayData()">⟳ 获取今日涨跌幅</button>
   </div>
 </div>
+
+<!-- 账户切换栏 -->
+<div class="account-bar" id="accountBar"></div>
 
 <div class="main">
   <div class="cards" id="cards"></div>
@@ -322,6 +438,283 @@ function bjTodayISO() {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
 }
 
+// ============================================================
+// 统计起始日期（可由用户通过日期选择器修改）
+// 默认 2026-04-27，修改后影响 getDailyReturns/getNavSeries/DATES 切片
+// ============================================================
+let STAT_START_ISO = localStorage.getItem('stat_start_date') || '2026-04-27';
+
+function isoToMD(iso) {
+  // '2026-04-27' → '4/27'
+  const [,mm,dd] = iso.split('-');
+  return `${parseInt(mm)}/${dd}`;
+}
+function mdToISO(md) {
+  // '4/27' → '2026-04-27'
+  const [m, d] = md.split('/');
+  return `2026-${String(parseInt(m)).padStart(2,'0')}-${String(parseInt(d)).padStart(2,'0')}`;
+}
+
+function onStatStartChange(val) {
+  if (!val) return;
+  STAT_START_ISO = val;
+  localStorage.setItem('stat_start_date', val);
+  // 重新计算 DATES（从新起点到今天）
+  rebuildDates();
+  buildDisplayDates();
+  renderAll();
+}
+
+function resetStatStart() {
+  STAT_START_ISO = '2026-04-27';
+  localStorage.removeItem('stat_start_date');
+  document.getElementById('statStartDate').value = '2026-04-27';
+  rebuildDates();
+  buildDisplayDates();
+  renderAll();
+}
+
+// 根据 STAT_START_ISO 重新生成 DATES 数组
+function rebuildDates() {
+  const [sy, sm, sd] = STAT_START_ISO.split('-').map(Number);
+  const start = new Date(Date.UTC(sy, sm-1, sd));
+  const end = bjNow();
+  const dates = [];
+  const d = new Date(start);
+  while (d <= end) {
+    const day = d.getUTCDay();
+    const iso = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+    if (day !== 0 && day !== 6 && !HOLIDAYS_2026.has(iso)) {
+      dates.push(`${d.getUTCMonth()+1}/${String(d.getUTCDate()).padStart(2,'0')}`);
+    }
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  // 替换全局 DATES
+  DATES.length = 0;
+  dates.forEach(d => DATES.push(d));
+}
+
+// ============================================================
+// 多账户管理系统（最多5个账户）
+// 存储格式 localStorage:
+//   'fund_accounts' → [{id, name}]
+//   'fund_acc_amount_{accId}_{code}' → 当前持仓金额（正负均可，最终取各账户之和的正数）
+// ============================================================
+const MAX_ACCOUNTS = 5;
+const ACCOUNTS_KEY = 'fund_accounts';
+const DEFAULT_ACCOUNT = { id: 'all', name: '全部账户' }; // 虚拟"全部"账户，不可删
+
+let currentAccountId = localStorage.getItem('current_account') || 'all'; // 当前选中账户
+
+function getAccounts() {
+  try { return JSON.parse(localStorage.getItem(ACCOUNTS_KEY) || '[]'); } catch { return []; }
+}
+function setAccounts(arr) { localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(arr)); }
+
+function accAmountKey(accId, code) { return `fund_acc_amount_${accId}_${code}`; }
+
+// 读单个账户下某基金的金额（null 表示未设置）
+function loadAccAmount(accId, code) {
+  const v = localStorage.getItem(accAmountKey(accId, code));
+  return v !== null ? parseFloat(v) : 0;
+}
+// 写单个账户下某基金的金额（delta=加减仓变化量，正负均可）
+function saveAccAmount(accId, code, delta) {
+  const current = loadAccAmount(accId, code);
+  const newVal = current + delta;
+  if (newVal <= 0) localStorage.removeItem(accAmountKey(accId, code));
+  else localStorage.setItem(accAmountKey(accId, code), String(newVal));
+}
+
+// 获取某基金在指定账户下的持仓（accId='all' 返回所有账户之和）
+function getFundAmount(code, accId) {
+  if (accId === 'all' || !accId) {
+    // 所有账户之和
+    const accs = getAccounts();
+    let total = 0;
+    accs.forEach(acc => { total += loadAccAmount(acc.id, code); });
+    return total;
+  }
+  return loadAccAmount(accId, code);
+}
+
+// 判断某基金是否在指定账户下有持仓（用于筛选）
+function isFundInAccount(code, accId) {
+  if (accId === 'all' || !accId) return true;
+  return loadAccAmount(accId, code) > 0;
+}
+
+// 获取当前账户下的活跃基金
+function getAccountFunds() {
+  const active = getActiveFunds();
+  if (currentAccountId === 'all') return active;
+  return active.filter(f => isFundInAccount(f.code, currentAccountId));
+}
+
+// ============================================================
+// 账户栏渲染
+// ============================================================
+function renderAccountBar() {
+  const accounts = getAccounts();
+  const bar = document.getElementById('accountBar');
+  if (!bar) return;
+  const tabs = [
+    `<button class="account-tab ${currentAccountId==='all'?'active':''}" onclick="switchAccount('all')">全部账户</button>`
+  ];
+  accounts.forEach(acc => {
+    tabs.push(`<button class="account-tab ${currentAccountId===acc.id?'active':''}" onclick="switchAccount('${acc.id}')" title="点击切换到${acc.name}">${acc.name}</button>`);
+  });
+  if (accounts.length < MAX_ACCOUNTS) {
+    tabs.push(`<button class="account-tab manage" onclick="showAccountManager()">＋ 新建账户</button>`);
+  } else {
+    tabs.push(`<button class="account-tab manage" onclick="showAccountManager()">⚙ 管理账户</button>`);
+  }
+  bar.innerHTML = tabs.join('');
+}
+
+function switchAccount(accId) {
+  currentAccountId = accId;
+  localStorage.setItem('current_account', accId);
+  renderAccountBar();
+  renderAll();
+}
+
+// ============================================================
+// 账户管理弹窗
+// ============================================================
+function showAccountManager() {
+  const accounts = getAccounts();
+  const rows = accounts.map(acc => `
+    <div class="acc-amount-row" style="gap:8px">
+      <span class="acc-name-badge">${acc.name}</span>
+      <span style="flex:1;font-size:11px;color:var(--muted)">账户ID: ${acc.id.substring(0,8)}...</span>
+      <button class="btn" style="font-size:11px;padding:3px 8px;color:var(--red);border-color:var(--red)" onclick="deleteAccount('${acc.id}')">删除</button>
+    </div>`).join('');
+  const canAdd = accounts.length < MAX_ACCOUNTS;
+  const html = `
+    <div class="modal-overlay" id="accMgrOverlay" onclick="if(event.target===this)closeModal('accMgrOverlay')">
+      <div class="modal-box">
+        <div class="modal-title">⚙ 账户管理</div>
+        <div style="margin-bottom:12px;font-size:12px;color:var(--muted)">最多创建 ${MAX_ACCOUNTS} 个账户，每个账户独立记录持仓</div>
+        <div id="accList">${rows || '<div style="color:var(--muted);font-size:12px;padding:12px 0">暂无账户，请新建</div>'}</div>
+        ${canAdd ? `<div style="margin-top:14px;display:flex;gap:8px;align-items:center">
+          <input id="newAccName" type="text" placeholder="账户名称（如：招商银行）" maxlength="10"
+            style="flex:1;padding:7px 10px;border-radius:6px;border:1px solid var(--border);background:rgba(255,255,255,0.05);color:var(--text);font-size:12px;outline:none">
+          <button class="btn primary" style="white-space:nowrap" onclick="doCreateAccount()">创建</button>
+        </div>` : `<div style="margin-top:12px;font-size:11px;color:var(--muted)">已达上限（${MAX_ACCOUNTS}个），请删除一个后再创建</div>`}
+        <div class="modal-footer">
+          <button class="btn" onclick="closeModal('accMgrOverlay')">关闭</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+function doCreateAccount() {
+  const input = document.getElementById('newAccName');
+  const name = input.value.trim();
+  if (!name) { toast('请输入账户名称', 'err'); return; }
+  const accounts = getAccounts();
+  if (accounts.length >= MAX_ACCOUNTS) { toast(`最多 ${MAX_ACCOUNTS} 个账户`, 'err'); return; }
+  if (accounts.some(a => a.name === name)) { toast('账户名称重复', 'err'); return; }
+  const id = 'acc_' + Date.now();
+  accounts.push({ id, name });
+  setAccounts(accounts);
+  closeModal('accMgrOverlay');
+  renderAccountBar();
+  toast(`✅ 账户"${name}"已创建`, 'ok');
+}
+
+function deleteAccount(accId) {
+  if (!confirm('删除该账户后，该账户下所有持仓记录将被清除，确认？')) return;
+  const accounts = getAccounts().filter(a => a.id !== accId);
+  setAccounts(accounts);
+  // 清理该账户的持仓数据
+  const keys = Object.keys(localStorage).filter(k => k.startsWith(`fund_acc_amount_${accId}_`));
+  keys.forEach(k => localStorage.removeItem(k));
+  if (currentAccountId === accId) {
+    currentAccountId = 'all';
+    localStorage.setItem('current_account', 'all');
+  }
+  closeModal('accMgrOverlay');
+  renderAccountBar();
+  renderAll();
+  toast('账户已删除', 'ok');
+}
+
+// ============================================================
+// 持仓金额弹窗（点击 input 时触发）
+// 每次调整相当于"加减仓"操作
+// ============================================================
+function showAmountDialog(code, fundName) {
+  const accounts = getAccounts();
+  if (accounts.length === 0) {
+    if (confirm('您尚未建立账户，是否立即创建？')) { showAccountManager(); }
+    return;
+  }
+  const rows = accounts.map(acc => {
+    const cur = loadAccAmount(acc.id, code);
+    return `
+      <div class="acc-amount-row">
+        <span class="acc-name-badge">${acc.name}</span>
+        <input type="number" class="acc-amount-input" id="delta_${acc.id}"
+          placeholder="当前:${cur > 0 ? cur.toLocaleString() : '无'} 正=加仓 负=减仓"
+          step="100" style="min-width:0">
+        <span class="acc-total-hint" id="cur_${acc.id}">${cur > 0 ? '¥'+cur.toLocaleString() : '—'}</span>
+      </div>`;
+  }).join('');
+
+  const html = `
+    <div class="modal-overlay" id="amtDlgOverlay" onclick="if(event.target===this)closeModal('amtDlgOverlay')">
+      <div class="modal-box">
+        <div class="modal-title">💼 调整持仓 — ${fundName.length > 12 ? fundName.substring(0,12)+'…' : fundName}</div>
+        <div style="margin-bottom:10px;font-size:11px;color:var(--muted)">输入加减仓金额（正数=加仓，负数=减仓），留空则不变</div>
+        <div>${rows}</div>
+        <div class="modal-footer">
+          <button class="btn" onclick="closeModal('amtDlgOverlay')">取消</button>
+          <button class="btn primary" onclick="doSaveAmounts('${code}')">确认</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+function doSaveAmounts(code) {
+  const accounts = getAccounts();
+  let changed = false;
+  accounts.forEach(acc => {
+    const input = document.getElementById(`delta_${acc.id}`);
+    if (!input) return;
+    const val = input.value.trim();
+    if (val === '' || val === '0') return;
+    const delta = parseFloat(val);
+    if (isNaN(delta)) return;
+    saveAccAmount(acc.id, code, delta);
+    changed = true;
+  });
+  closeModal('amtDlgOverlay');
+  if (changed) {
+    const fund = FUNDS.find(f => f.code === code);
+    if (fund) fund.amount = getFundAmount(code, 'all');
+    renderCards();
+    renderTable();
+    toast('✅ 持仓已更新', 'ok');
+  }
+}
+
+function closeModal(id) {
+  const el = document.getElementById(id);
+  if (el) el.remove();
+}
+
+// 兼容旧的 saveAmount 调用（保留供 initCache 用）
+function loadAmount(code) {
+  return getFundAmount(code, currentAccountId);
+}
+function saveAmount(code, val) {
+  // legacy，不再使用，保留空壳
+}
+
 // 工具函数（使用北京时间）
 function todayKey() {
   return bjTodayKey();
@@ -353,9 +746,10 @@ const HOLIDAYS_2026 = new Set([
   '2026-10-01','2026-10-02','2026-10-03','2026-10-04','2026-10-05','2026-10-06','2026-10-07',
 ]);
 
-// 自动生成从4/27到今天（北京时间）的所有交易日（工作日-节假日）
-function generateWorkdays() {
-  const start = new Date(Date.UTC(2026, 3, 27)); // 2026-04-27 UTC
+// 自动生成从指定日期到今天（北京时间）的所有交易日（工作日-节假日）
+function generateWorkdays(startISO) {
+  const [sy, sm, sd] = (startISO || '2026-04-27').split('-').map(Number);
+  const start = new Date(Date.UTC(sy, sm-1, sd));
   const end = bjNow(); // 北京时间当前
   const dates = [];
   const d = new Date(start);
@@ -370,7 +764,8 @@ function generateWorkdays() {
   return dates;
 }
 
-const DATES = generateWorkdays();
+// DATES 是可变数组，由 rebuildDates() / generateWorkdays() 填充
+const DATES = generateWorkdays(STAT_START_ISO);
 
 // sNav: 4/27单位净值（计算总收益率起点）
 // latestNav: 最新已知净值（由历史API更新）
@@ -581,6 +976,7 @@ async function fetchFundInfoByCode(code) {
 }
 
 function renderAll() {
+  renderAccountBar();
   renderCards();
   renderTable();
 }
@@ -680,24 +1076,6 @@ function getNavCache() {
 }
 function setNavCache(c) { localStorage.setItem('fund_nav_cache_v1', JSON.stringify(c)); }
 
-// ============================================================
-// 持仓金额持久化（localStorage）
-// key: "fund_amount_{code}"
-// ============================================================
-function loadAmount(code) {
-  const v = localStorage.getItem('fund_amount_' + code);
-  return v !== null ? parseFloat(v) : 0;
-}
-function saveAmount(code, val) {
-  const num = parseFloat(val);
-  if (isNaN(num) || num < 0) { localStorage.removeItem('fund_amount_' + code); }
-  else { localStorage.setItem('fund_amount_' + code, String(num)); }
-  // 更新 FUNDS 数组并重新渲染
-  const fund = FUNDS.find(f => f.code === code);
-  if (fund) fund.amount = isNaN(num) || num < 0 ? 0 : num;
-  renderCards();
-}
-
 // 从净值缓存中取最新净值（取最近日期）
 function getLatestNavFromCache(code) {
   const nc = getNavCache();
@@ -710,11 +1088,14 @@ function getLatestNavFromCache(code) {
   return entries.length > 0 ? entries[0] : null;
 }
 
-// 计算总收益率：(latestNav / sNav - 1) * 100
+// 计算总收益率：(latestNav / startNav - 1) * 100
+// startNav 优先取统计起始日的净值，没有则用 sNav（4/27）
 function calcRet(f) {
   const entry = getLatestNavFromCache(f.code);
   if (!entry) return null;
-  return (entry.nav / f.sNav - 1) * 100;
+  const nc = getNavCache();
+  const startNav = nc[navCacheKey(f.code, STAT_START_ISO)] || f.sNav;
+  return (entry.nav / startNav - 1) * 100;
 }
 
 // Init cache from excel data (使用SEED_DATES对齐dr数组)
@@ -759,25 +1140,31 @@ function getDailyReturns(code, cache) {
   return returns;
 }
 
-// 获取净值时间序列（从4/27起点开始）
+// 获取净值时间序列（从统计起点开始）
 // 优先从净值缓存取，不足时从日收益率重建
 function getNavSeries(f, navCache, cache) {
   const nc = navCache || getNavCache();
   const prefix = `nav_${f.code}__`;
+  // 从缓存中找起点净值（统计起始日）
+  const startISO = STAT_START_ISO;
+  // 起点净值：如果缓存中有该日期净值则使用，否则用 sNav（原始4/27净值）
+  const startNavCached = nc[navCacheKey(f.code, startISO)];
+  const startNav = startNavCached || f.sNav;
+
   let series = Object.keys(nc)
     .filter(k => k.startsWith(prefix))
     .map(k => ({ date: k.replace(prefix, ''), nav: nc[k] }))
-    .filter(e => e.date >= '2026-04-27')
+    .filter(e => e.date >= startISO)
     .sort((a, b) => a.date.localeCompare(b.date));
-  // 确保起点为4/27的sNav
-  if (series.length === 0 || series[0].date > '2026-04-27') {
-    series.unshift({ date: '2026-04-27', nav: f.sNav });
+  // 确保起点
+  if (series.length === 0 || series[0].date > startISO) {
+    series.unshift({ date: startISO, nav: startNav });
   }
   // 净值缓存不足（<2条），从日收益率重建
   if (series.length < 2) {
     const c = cache || getCache();
-    series = [{ date: '2026-04-27', nav: f.sNav }];
-    let nav = f.sNav;
+    series = [{ date: startISO, nav: startNav }];
+    let nav = startNav;
     DATES.forEach((d) => {
       let v = c[cacheKey(f.code, d)];
       if (v === undefined) {
@@ -1105,7 +1492,7 @@ function calcUpDownDays(f) {
 
 // 对基金列表排序（仅活跃基金）
 function getSortedFunds() {
-  const list = [...getActiveFunds()];
+  const list = [...getAccountFunds()];
   const cache = getCache();
   const today = todayKey();
   
@@ -1196,27 +1583,43 @@ function buildDisplayDates() {
 
 function renderCards() {
   const today = todayKey();
-  const todayN = normDate(today);
   const cache = getCache();
-  const activeFunds = getActiveFunds();
+  // 根据当前账户筛选基金
+  const displayFunds = getAccountFunds();
+  const isAccountView = currentAccountId !== 'all';
+  const accName = isAccountView ? (getAccounts().find(a => a.id === currentAccountId) || {}).name : '全部';
 
   // 今日收益汇总（有持仓金额的基金才计入）
   let todayGain = 0, hasTodayGain = false;
-  activeFunds.forEach(f => {
-    const amt = f.amount || loadAmount(f.code);
-    if (!amt) return;
+  let totalAmount = 0;
+  displayFunds.forEach(f => {
+    const amt = getFundAmount(f.code, currentAccountId);
     f.amount = amt;
+    totalAmount += amt;
+    if (!amt) return;
     const v = cache[cacheKey(f.code, today)];
     if (v != null) {
       todayGain += amt * v / 100;
       hasTodayGain = true;
     }
   });
-  const totalAmount = activeFunds.reduce((s, f) => s + (f.amount || loadAmount(f.code) || 0), 0);
+
+  // 今日收益率（仅账户视图）
+  let todayRateHtml = '';
+  if (isAccountView && totalAmount > 0) {
+    const rate = todayGain / totalAmount * 100;
+    const rateColor = rate >= 0 ? 'var(--red)' : 'var(--green)';
+    todayRateHtml = `
+      <div class="card" style="border-color:rgba(88,166,255,0.3);background:rgba(88,166,255,0.04)">
+        <div class="card-label">📈 ${accName} 今日收益率</div>
+        <div class="card-val" style="color:${rateColor}">${hasTodayGain ? (rate >= 0 ? '+' : '') + rate.toFixed(3) + '%' : '—'}</div>
+        <div class="card-sub">基于当前账户持仓估算</div>
+      </div>`;
+  }
 
   // 今日行情：涨/跌/待
   let up=0, dn=0, noData=0;
-  activeFunds.forEach(f => {
+  displayFunds.forEach(f => {
     const v = cache[cacheKey(f.code, today)];
     if (v == null) noData++;
     else if (v > 0) up++;
@@ -1224,34 +1627,41 @@ function renderCards() {
   });
 
   // 今日涨幅排序（前5最亮眼，后5最需努力）
-  const withToday = activeFunds.map(f => ({
+  const withToday = displayFunds.map(f => ({
     name: f.name, code: f.code, v: cache[cacheKey(f.code, today)]
   })).filter(x => x.v != null);
-  const sortedUp = [...withToday].sort((a,b) => b.v - a.v);
-  const top5 = sortedUp.slice(0, 5);
-  const bottom5 = [...sortedUp].sort((a,b) => a.v - b.v).slice(0, 5);
+  const sortedByVal = [...withToday].sort((a,b) => b.v - a.v);
+  const top5 = sortedByVal.slice(0, 5);
+  const bottom5 = [...sortedByVal].sort((a,b) => a.v - b.v).slice(0, 5);
+
+  // 颜色按实际涨跌值动态设色（涨红跌绿）
+  function valColor(v) { return v > 0 ? 'var(--red)' : v < 0 ? 'var(--green)' : 'var(--muted)'; }
+  function valSign(v) { return v > 0 ? '+' : ''; }
 
   const top5Html = top5.map(x =>
     `<div style="display:flex;justify-content:space-between;padding:1px 0;font-size:11px">
       <span style="color:var(--muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${x.name.length > 8 ? x.name.substring(0,8)+'…' : x.name}</span>
-      <span style="color:var(--red);font-weight:600">+${x.v.toFixed(2)}%</span>
+      <span style="color:${valColor(x.v)};font-weight:600">${valSign(x.v)}${x.v.toFixed(2)}%</span>
     </div>`
   ).join('');
   const bottom5Html = bottom5.map(x =>
     `<div style="display:flex;justify-content:space-between;padding:1px 0;font-size:11px">
       <span style="color:var(--muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${x.name.length > 8 ? x.name.substring(0,8)+'…' : x.name}</span>
-      <span style="color:var(--green);font-weight:600">${x.v.toFixed(2)}%</span>
+      <span style="color:${valColor(x.v)};font-weight:600">${valSign(x.v)}${x.v.toFixed(2)}%</span>
     </div>`
   ).join('');
 
+  const startLabel = STAT_START_ISO === '2026-04-27' ? '4/27' : STAT_START_ISO.substring(5).replace('-', '/');
+
   document.getElementById('cards').innerHTML = `
+    ${todayRateHtml}
     <div class="card">
-      <div class="card-label">持仓总金额</div>
+      <div class="card-label">持仓总金额${isAccountView ? ' · '+accName : ''}</div>
       <div class="card-val" style="color:var(--blue)">${totalAmount > 0 ? (totalAmount/10000).toFixed(2) + ' 万' : '—'}</div>
-      <div class="card-sub">${activeFunds.length} 支基金 · 统计区间 4/27 起</div>
+      <div class="card-sub">${displayFunds.length} 支基金 · 统计区间 ${startLabel} 起</div>
     </div>
     <div class="card">
-      <div class="card-label">今日收益</div>
+      <div class="card-label">今日收益${isAccountView ? ' · '+accName : ''}</div>
       <div class="card-val" style="color:${hasTodayGain ? (todayGain >= 0 ? 'var(--red)' : 'var(--green)') : 'var(--muted)'}">
         ${hasTodayGain ? (todayGain >= 0 ? '+' : '') + todayGain.toFixed(0) + ' 元' : '—'}
       </div>
@@ -1281,6 +1691,14 @@ function renderCards() {
       </div>
     </div>
   `;
+
+  // 当账户视图时，卡片行调整为多列（含收益率卡片）
+  const cardsEl = document.getElementById('cards');
+  if (isAccountView) {
+    cardsEl.style.gridTemplateColumns = 'repeat(6, 1fr)';
+  } else {
+    cardsEl.style.gridTemplateColumns = 'repeat(5, 1fr)';
+  }
 }
 
 function renderTable() {
@@ -1368,11 +1786,12 @@ function renderTable() {
     const sc = scoreData.total;
     const scoreHtml = `<span class="${sc >= 75 ? 'model-good' : sc >= 55 ? 'model-mid' : 'model-bad'}" title="夏普:${scoreData.sScore} 回撤:${scoreData.dScore} 卡尔玛:${scoreData.cScore} 修复:${scoreData.rScore} 胜率:${scoreData.wScore}">${sc}</span>`;
 
-    // 持仓金额 — 可编辑输入框，存localStorage
-    const storedAmount = loadAmount(f.code);
-    const amountVal = storedAmount || 0;
+    // 持仓金额 — 点击弹窗调整，多账户管理
+    const amountVal = getFundAmount(f.code, currentAccountId);
     f.amount = amountVal;
-    const amountHtml = `<input type="number" class="amount-input" data-code="${f.code}" value="${amountVal > 0 ? amountVal : ''}" placeholder="金额" min="0" step="100" onchange="saveAmount('${f.code}', this.value)">`;
+    const amountDisplay = amountVal > 0 ? (amountVal >= 10000 ? (amountVal/10000).toFixed(2)+'万' : amountVal.toLocaleString()) : '点击设置';
+    const amountColor = amountVal > 0 ? 'var(--text)' : 'var(--muted)';
+    const amountHtml = `<span style="cursor:pointer;color:${amountColor};font-size:12px;padding:3px 6px;border-radius:4px;border:1px solid var(--border);background:rgba(255,255,255,0.03)" onclick="showAmountDialog('${f.code}','${f.name.replace(/'/g,'\\\'')}')">${amountDisplay}</span>`;
     
     // 盈利/亏损天数
     const ud = calcUpDownDays(f);
@@ -1443,7 +1862,7 @@ function renderTable() {
   }).join('');
   
   document.getElementById('tbody').innerHTML = rows;
-  document.getElementById('cnt').textContent = getActiveFunds().length;
+  document.getElementById('cnt').textContent = getAccountFunds().length;
 
   // 更新数据健康状态
   updateDataHealth();
@@ -1798,8 +2217,13 @@ function getLastTradingDay() {
 }
 
 async function init() {
+  // 初始化统计起始日期选择器
+  const dateInput = document.getElementById('statStartDate');
+  if (dateInput) dateInput.value = STAT_START_ISO;
+
   initCache();
   buildDisplayDates();
+  renderAccountBar();
   renderCards();
   renderTable();
 
