@@ -372,7 +372,7 @@ td.today-td { background: rgba(88,166,255,0.04); }
 <div class="header">
   <div>
     <h1>📊 基金表现统计看板</h1>
-    <div class="header-sub" id="headerSub">数据来源：东方财富 · 涨跌幅单位：% · 交易时间每5分钟自动刷新</div>
+    <div class="header-sub" id="headerSub">东方财富 · 每5分钟自动刷新</div>
   </div>
   <div class="actions">
     <div class="date-picker-wrap">
@@ -385,6 +385,9 @@ td.today-td { background: rgba(88,166,255,0.04); }
     <span id="dataHealth" style="font-size:10px;color:var(--muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
     <button class="btn" onclick="showAddFundDialog()">➕ 添加基金</button>
     <button class="btn" onclick="showRecycleBin()">🗑️ 回收站</button>
+    <button class="btn" onclick="cloudPull()">☁️ 拉取</button>
+    <button class="btn" onclick="cloudPush()">☁️ 推送</button>
+    <button class="btn" onclick="showCloudSettings()">⚙️ 云同步</button>
     <button class="btn" onclick="fetchAllHistory({force:true})">📅 补全历史数据</button>
     <button class="btn primary" id="fetchTodayBtn" onclick="fetchTodayData()">⟳ 获取今日涨跌幅</button>
   </div>
@@ -623,6 +626,7 @@ function doCreateAccount() {
   closeModal('accMgrOverlay');
   renderAccountBar();
   toast(`✅ 账户"${name}"已创建`, 'ok');
+  autoCloudPush();
 }
 
 function deleteAccount(accId) {
@@ -640,7 +644,7 @@ function deleteAccount(accId) {
   renderAccountBar();
   renderAll();
   toast('账户已删除', 'ok');
-}
+  autoCloudPush();}
 
 // ============================================================
 // 持仓金额弹窗（点击 input 时触发）
@@ -699,6 +703,7 @@ function doSaveAmounts(code) {
     renderCards();
     renderTable();
     toast('✅ 持仓已更新', 'ok');
+    autoCloudPush(); // 持仓变更后自动推送云端
   }
 }
 
@@ -713,6 +718,220 @@ function loadAmount(code) {
 }
 function saveAmount(code, val) {
   // legacy，不再使用，保留空壳
+}
+
+// ============================================================
+// 云同步系统（GitHub REST API）
+// 将持仓金额+账户信息+统计起始日期 存为仓库的 fund-positions.json
+// 用户配置 GitHub Personal Access Token 后即可跨设备同步
+// ============================================================
+const GH_TOKEN_KEY = 'fund_gh_token';
+const GH_REPO = 'MrYZT/fund-dashboard';
+const GH_FILE = 'fund-positions.json';
+const GH_BRANCH = 'main';
+
+function getGhToken() { return localStorage.getItem(GH_TOKEN_KEY) || ''; }
+function setGhToken(t) { localStorage.setItem(GH_TOKEN_KEY, t); }
+
+// 导出所有持仓数据为 JSON 对象
+function exportPositionsData() {
+  const data = {
+    version: 1,
+    updatedAt: bjTodayISO() + ' ' + new Date().toLocaleTimeString(),
+    accounts: getAccounts(),
+    statStartDate: STAT_START_ISO,
+    positions: {}
+  };
+  // 收集所有账户下所有基金的持仓金额
+  const accs = getAccounts();
+  const codes = FUNDS.map(f => f.code);
+  accs.forEach(acc => {
+    codes.forEach(code => {
+      const v = loadAccAmount(acc.id, code);
+      if (v > 0) {
+        const key = `${acc.id}_${code}`;
+        data.positions[key] = v;
+      }
+    });
+  });
+  return data;
+}
+
+// 导入持仓数据到 localStorage
+function importPositionsData(data) {
+  if (!data || data.version !== 1) return false;
+  // 导入账户
+  if (data.accounts && data.accounts.length > 0) {
+    setAccounts(data.accounts);
+  }
+  // 导入统计起始日期
+  if (data.statStartDate) {
+    STAT_START_ISO = data.statStartDate;
+    localStorage.setItem('stat_start_date', data.statStartDate);
+    const dateInput = document.getElementById('statStartDate');
+    if (dateInput) dateInput.value = data.statStartDate;
+    rebuildDates();
+    buildDisplayDates();
+  }
+  // 导入持仓金额
+  if (data.positions) {
+    // 先清除旧的持仓数据
+    Object.keys(localStorage).filter(k => k.startsWith('fund_acc_amount_')).forEach(k => localStorage.removeItem(k));
+    Object.entries(data.positions).forEach(([key, val]) => {
+      localStorage.setItem(`fund_acc_amount_${key}`, String(val));
+    });
+  }
+  return true;
+}
+
+// 推送持仓数据到 GitHub
+async function cloudPush() {
+  const token = getGhToken();
+  if (!token) {
+    toast('⚠️ 请先配置 GitHub Token', 'err');
+    showCloudSettings();
+    return;
+  }
+  const data = exportPositionsData();
+  const content = btoa(unescape(encodeURIComponent(JSON.stringify(data, null, 2))));
+  // 先获取文件当前 SHA（用于更新）
+  const apiUrl = `https://api.github.com/repos/${GH_REPO}/contents/${GH_FILE}`;
+  let sha = null;
+  try {
+    const resp = await fetch(apiUrl, {
+      headers: { 'Authorization': `token ${token}`, 'Accept': 'application/vnd.github.v3+json' }
+    });
+    if (resp.ok) {
+      const json = await resp.json();
+      sha = json.sha;
+    }
+  } catch(e) { /* 文件可能不存在 */ }
+
+  const body = {
+    message: `sync positions ${data.updatedAt}`,
+    content: content,
+    branch: GH_BRANCH
+  };
+  if (sha) body.sha = sha;
+
+  try {
+    const resp = await fetch(apiUrl, {
+      method: 'PUT',
+      headers: { 'Authorization': `token ${token}`, 'Accept': 'application/vnd.github.v3+json' },
+      body: JSON.stringify(body)
+    });
+    if (resp.ok || resp.status === 201) {
+      toast('☁️ 持仓数据已同步至云端', 'ok');
+    } else {
+      const err = await resp.json();
+      toast('⚠️ 同步失败：' + (err.message || resp.status), 'err');
+    }
+  } catch(e) {
+    toast('⚠️ 网络错误：' + e.message, 'err');
+  }
+}
+
+// 从 GitHub 拉取持仓数据
+async function cloudPull() {
+  const token = getGhToken();
+  if (!token) {
+    toast('⚠️ 请先配置 GitHub Token', 'err');
+    showCloudSettings();
+    return;
+  }
+  const apiUrl = `https://api.github.com/repos/${GH_REPO}/contents/${GH_FILE}`;
+  try {
+    const resp = await fetch(apiUrl, {
+      headers: { 'Authorization': `token ${token}`, 'Accept': 'application/vnd.github.v3+json' }
+    });
+    if (resp.status === 404) {
+      toast('ℹ️ 云端尚无数据，请先推送', '');
+      return;
+    }
+    if (!resp.ok) {
+      toast('⚠️ 拉取失败：' + resp.status, 'err');
+      return;
+    }
+    const json = await resp.json();
+    const content = decodeURIComponent(escape(atob(json.content)));
+    const data = JSON.parse(content);
+    if (importPositionsData(data)) {
+      renderAccountBar();
+      renderCards();
+      renderTable();
+      toast('☁️ 已从云端恢复持仓数据', 'ok');
+    } else {
+      toast('⚠️ 云端数据格式不兼容', 'err');
+    }
+  } catch(e) {
+    toast('⚠️ 网络错误：' + e.message, 'err');
+  }
+}
+
+// 云同步设置弹窗（配置 GitHub Token）
+function showCloudSettings() {
+  const curToken = getGhToken();
+  const masked = curToken ? curToken.substring(0, 4) + '****' + curToken.substring(curToken.length - 4) : '未设置';
+  const html = `
+    <div class="modal-overlay" id="cloudSettingsOverlay" onclick="if(event.target===this)closeModal('cloudSettingsOverlay')">
+      <div class="modal-box" style="width:420px">
+        <div class="modal-title">☁️ 云同步设置</div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:12px">
+          持仓数据通过 GitHub REST API 存储至仓库文件，实现跨设备同步。<br>
+          需要提供 GitHub Personal Access Token（需 repo 权限）。
+        </div>
+        <div style="margin-bottom:12px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">当前 Token：${masked}</label>
+          <input type="password" id="ghTokenInput" placeholder="ghp_xxxx 或 github_pat_xxxx"
+            style="width:100%;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:rgba(255,255,255,0.05);color:var(--text);font-size:13px;outline:none">
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:16px">
+          🔗 <a href="https://github.com/settings/tokens/new" target="_blank" style="color:var(--blue)">创建 Token</a>（勾选 repo 权限，过期时间建议设90天）
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn" onclick="closeModal('cloudSettingsOverlay')">关闭</button>
+          <button class="btn" onclick="clearGhToken()" style="color:var(--red);border-color:var(--red)">清除 Token</button>
+          <button class="btn primary" onclick="saveGhTokenAndTest()">保存并测试</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+function clearGhToken() {
+  localStorage.removeItem(GH_TOKEN_KEY);
+  toast('Token 已清除', 'ok');
+  closeModal('cloudSettingsOverlay');
+}
+
+async function saveGhTokenAndTest() {
+  const input = document.getElementById('ghTokenInput');
+  const token = input.value.trim();
+  if (!token) { toast('请输入 Token', 'err'); return; }
+  // 测试 Token 是否有效
+  try {
+    const resp = await fetch('https://api.github.com/user', {
+      headers: { 'Authorization': `token ${token}`, 'Accept': 'application/vnd.github.v3+json' }
+    });
+    if (resp.ok) {
+      const user = await resp.json();
+      setGhToken(token);
+      toast(`✅ Token 有效（${user.login}）`, 'ok');
+      closeModal('cloudSettingsOverlay');
+    } else {
+      toast('⚠️ Token 无效，请检查', 'err');
+    }
+  } catch(e) {
+    toast('⚠️ 网络错误', 'err');
+  }
+}
+
+// 持仓更新后自动推送到云端（延迟5秒，避免频繁调用）
+let _pushTimer = null;
+function autoCloudPush() {
+  if (!getGhToken()) return; // 没配 Token 则跳过
+  if (_pushTimer) clearTimeout(_pushTimer);
+  _pushTimer = setTimeout(() => cloudPush(), 5000);
 }
 
 // 工具函数（使用北京时间）
@@ -833,14 +1052,13 @@ function restoreFund(code) {
   renderAll();
 }
 
-// 搜索基金（通过名称或代码）
+// 搜索基金（通过名称或代码）—— 改版：支持多结果列表选择
 async function addFundBySearch(query) {
   const q = query.trim();
   if (!q) return null;
   // 先检查是否已在列表中
   const existing = FUNDS.find(f => f.code === q || f.name.includes(q));
   if (existing) {
-    // 如果在回收站，先恢复
     const hidden = getHiddenCodes();
     if (hidden.includes(existing.code)) {
       restoreFund(existing.code);
@@ -849,22 +1067,47 @@ async function addFundBySearch(query) {
     alert(`该基金已在看板中：${existing.name} (${existing.code})`);
     return null;
   }
-  // 通过东方财富API搜索基金信息
+  // 搜索：代码→精确匹配，名称→多结果列表
   try {
-    const info = await fetchFundInfo(q);
-    if (!info) { alert('未找到该基金，请检查名称或代码'); return null; }
-    // 构建新的FUNDS条目
+    let results;
+    if (q.match(/^\d{6}$/)) {
+      // 精确代码搜索
+      const info = await fetchFundInfoByCodeJsonp(q);
+      if (!info) {
+        // jsonpgz失败时fallback到F10DataApi
+        const info2 = await fetchFundInfoByF10(q);
+        if (!info2) { alert('未找到该基金代码'); return null; }
+        results = [info2];
+      } else {
+        results = [info];
+      }
+    } else {
+      // 名称关键词搜索，返回列表供选择
+      results = await fetchFundInfoByName(q);
+      if (!results || results.length === 0) { alert('未找到匹配的基金'); return null; }
+      if (results.length > 1) {
+        // 多结果：让用户选择
+        const chosen = await showSearchResultPicker(results);
+        if (!chosen) return null;
+        results = [chosen];
+      }
+    }
+    const info = results[0];
+    // 再次检查是否已在列表中
+    if (FUNDS.find(f => f.code === info.code)) {
+      alert(`该基金已在看板中`);
+      return null;
+    }
     const newFund = {
       seq: FUNDS.length + 1,
       name: info.name,
       code: info.code,
       buy: null, def: null, tag: null,
-      sNav: info.nav || 1, // 起始净值
+      sNav: info.nav || 1,
       latestNav: null, ret: null, days: 0, sumR: 0, up: 0, dn: 0, avg: 0,
       amount: 0, dr: []
     };
     FUNDS.push(newFund);
-    // 拉取历史数据填充
     await fetchAllHistory();
     renderAll();
     return newFund;
@@ -875,85 +1118,85 @@ async function addFundBySearch(query) {
   }
 }
 
-// 通过天天基金搜索接口获取基金基本信息
-async function fetchFundInfo(query) {
-  return new Promise((resolve, reject) => {
+// 通过 fundgz JSONP 按代码精确查询（复用 _estCallbacks 路由机制）
+function fetchFundInfoByCodeJsonp(code) {
+  return new Promise((resolve) => {
     const script = document.createElement('script');
-    // 使用基金搜索接口（按代码或名称精确查询）
-    const searchUrl = query.match(/^\d{6}$/)
-      ? `https://fundgz.1234567.com.cn/js/${query}.js`
-      : `https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx?m=1&key=${encodeURIComponent(query)}`;
-    script.src = searchUrl;
-    let done = false;
-    const timeout = setTimeout(() => {
-      if (done) return;
-      done = true;
-      cleanup();
-      reject(new Error('搜索超时'));
-    }, 8000);
-
-    function cleanup() {
-      clearTimeout(timeout);
-      try { document.head.removeChild(script); } catch(e) {}
-      delete window.jsonpgz;
-      delete window.FundSearch;
-    }
-
-    script.onload = () => {
-      if (done) return;
-      done = true;
-      // 如果是代码搜索（jsonpgz回调）
-      if (window.jsonpgz && window.jsonpgz.fundcode) {
-        const d = window.jsonpgz;
-        cleanup();
-        resolve({ code: d.fundcode, name: d.name, nav: parseFloat(d.dwjz) || null });
-        return;
-      }
-      // 如果是名称搜索（FundSearch回调）
-      if (window.FundSearch && window.FundSearch.Datas) {
-        const datas = window.FundSearch.Datas;
-        if (datas.length > 0) {
-          const first = datas[0];
-          cleanup();
-          resolve({ code: first.CODE, name: first.NAME, nav: null });
-          return;
-        }
-      }
-      cleanup();
-      resolve(null);
-    };
-    script.onerror = () => {
-      if (done) return;
-      done = true;
-      cleanup();
-      // 代码搜索失败时，尝试名称搜索
-      if (query.match(/^\d{6}$/)) {
-        // 直接用F10DataApi试一下
-        fetchFundInfoByCode(query).then(resolve).catch(reject);
+    script.src = `https://fundgz.1234567.com.cn/js/${code}.js?rt=${Date.now()}`;
+    const cleanup = () => { try { document.head.removeChild(script); } catch(e) {} };
+    const timer = setTimeout(() => { delete _estCallbacks[code]; resolve(null); cleanup(); }, 8000);
+    _estCallbacks[code] = (data) => {
+      clearTimeout(timer);
+      delete _estCallbacks[code];
+      if (data && data.fundcode) {
+        resolve({ code: data.fundcode, name: data.name, nav: parseFloat(data.dwjz) || null });
       } else {
         resolve(null);
       }
+      cleanup();
+    };
+    script.onerror = () => { clearTimeout(timer); delete _estCallbacks[code]; resolve(null); cleanup(); };
+    document.head.appendChild(script);
+  });
+}
+
+// 通过东方财富基金搜索API按名称关键词搜索（返回多结果）
+function fetchFundInfoByName(keyword) {
+  return new Promise((resolve) => {
+    const cbName = '_fundSearchCb_' + Date.now();
+    window[cbName] = function(data) {
+      cleanup();
+      if (!data || !data.Datas || data.Datas.length === 0) { resolve([]); return; }
+      const results = data.Datas.slice(0, 20).map(d => ({
+        code: d.CODE || d.FundCode,
+        name: d.NAME || d.ShortName,
+        nav: null
+      }));
+      resolve(results);
+    };
+    const script = document.createElement('script');
+    script.src = `https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx?m=1&key=${encodeURIComponent(keyword)}&cb=${cbName}`;
+    let done = false;
+    const cleanup = () => {
+      done = true;
+      clearTimeout(timeout);
+      try { document.head.removeChild(script); } catch(e) {}
+      delete window[cbName];
+    };
+    const timeout = setTimeout(() => {
+      if (done) return;
+      cleanup();
+      resolve([]);
+    }, 8000);
+    script.onerror = () => {
+      if (done) return;
+      cleanup();
+      resolve([]);
     };
     document.head.appendChild(script);
   });
 }
 
-async function fetchFundInfoByCode(code) {
-  return new Promise((resolve, reject) => {
+// 通过F10DataApi按代码获取基本信息（fallback）
+function fetchFundInfoByF10(code) {
+  return new Promise((resolve) => {
     const script = document.createElement('script');
-    script.src = `https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code=${code}&page=1&sdate=2026-04-27&edate=2026-06-17&per=3`;
+    const todayISO = bjTodayISO();
+    script.src = `https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code=${code}&page=1&sdate=2026-04-27&edate=${todayISO}&per=3`;
     let done = false;
-    const timeout = setTimeout(() => {
-      if (done) return; done = true;
-      cleanup(); reject(new Error('F10 timeout'));
-    }, 8000);
-    function cleanup() {
+    const cleanup = () => {
+      done = true;
       clearTimeout(timeout);
       try { document.head.removeChild(script); } catch(e) {}
       delete window.apidata;
-    }
+    };
+    const timeout = setTimeout(() => {
+      if (done) return;
+      cleanup();
+      resolve(null);
+    }, 8000);
     script.onload = () => {
-      if (done) return; done = true;
+      if (done) return;
       try {
         const raw = window.apidata;
         if (!raw || !raw.content) { cleanup(); resolve(null); return; }
@@ -961,17 +1204,46 @@ async function fetchFundInfoByCode(code) {
         tmp.innerHTML = raw.content;
         const rows = tmp.querySelectorAll('tbody tr');
         if (rows.length === 0) { cleanup(); resolve(null); return; }
-        // 从标题或第一行获取基金名
-        const nameEl = raw.content.match(/<t[h][^>]*>([^<]+)/);
-        let name = nameEl ? nameEl[1].trim() : code;
-        const firstRow = rows[rows.length - 1]; // 最新记录
-        const cells = firstRow.querySelectorAll('td');
+        const nameMatch = raw.content.match(/<t[h][^>]*>([^<]+)/);
+        const name = nameMatch ? nameMatch[1].trim() : code;
+        const lastRow = rows[rows.length - 1];
+        const cells = lastRow.querySelectorAll('td');
         const nav = cells.length >= 2 ? parseFloat(cells[1].textContent.trim()) : null;
         cleanup();
         resolve({ code, name, nav });
-      } catch(e) { cleanup(); reject(e); }
+      } catch(e) { cleanup(); resolve(null); }
     };
+    script.onerror = () => { if (done) return; cleanup(); resolve(null); };
     document.head.appendChild(script);
+  });
+}
+
+// 搜索结果选择弹窗（名称搜索返回多条时使用）
+function showSearchResultPicker(results) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.id = 'searchPickerOverlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center';
+    const listHtml = results.map((r, i) => `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid var(--border);cursor:pointer;transition:background 0.15s" 
+           onmouseover="this.style.background='rgba(88,166,255,0.08)'" onmouseout="this.style.background=''"
+           onclick="window._pickSearchResult(${i})">
+        <span style="color:var(--text);font-size:14px">${r.name}</span>
+        <span style="color:var(--muted);font-size:12px">${r.code}</span>
+      </div>`).join('');
+    overlay.innerHTML = `
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;width:420px;max-width:90vw">
+        <h3 style="margin:0 0 12px;font-size:16px;color:var(--text)">🔍 选择基金</h3>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:8px">共找到 ${results.length} 个结果，点击选择要添加的基金</div>
+        <div style="max-height:300px;overflow-y:auto">${listHtml}</div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+          <button class="btn" onclick="window._cancelSearchPicker()">取消</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) { overlay.remove(); resolve(null); } });
+    window._pickSearchResult = (idx) => { overlay.remove(); resolve(results[idx]); };
+    window._cancelSearchPicker = () => { overlay.remove(); resolve(null); };
   });
 }
 
@@ -2230,6 +2502,10 @@ async function init() {
   // 自动获取数据：增量缓存 + 并行估值
   setTimeout(async () => {
     toast('🔄 正在自动获取最新数据...', '');
+    // 如果有 GitHub Token，先从云端拉取持仓数据
+    if (getGhToken()) {
+      try { await cloudPull(); } catch(e) { console.error('[init] cloudPull error:', e); }
+    }
     try {
       await fetchAllHistory({ autoFetchToday: false });
     } catch(e) {
