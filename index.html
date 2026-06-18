@@ -741,6 +741,7 @@ function exportPositionsData() {
     updatedAt: bjTodayISO() + ' ' + new Date().toLocaleTimeString(),
     accounts: getAccounts(),
     statStartDate: STAT_START_ISO,
+    customFunds: JSON.parse(localStorage.getItem(CUSTOM_FUND_KEY) || '[]'),
     positions: {}
   };
   // 收集所有账户下所有基金的持仓金额
@@ -773,6 +774,11 @@ function importPositionsData(data) {
     if (dateInput) dateInput.value = data.statStartDate;
     rebuildDates();
     buildDisplayDates();
+  }
+  // 导入自定义基金列表
+  if (data.customFunds && Array.isArray(data.customFunds)) {
+    localStorage.setItem(CUSTOM_FUND_KEY, JSON.stringify(data.customFunds));
+    loadCustomFunds();
   }
   // 导入持仓金额
   if (data.positions) {
@@ -1014,8 +1020,95 @@ const FUNDS = [
   {seq:20, name:"景顺长城研究精选股票A", code:"000688", buy:80.96, def:49.81, tag:null, sNav:3.525, latestNav:null, ret:null, days:18, sumR:20.54, up:13, dn:5, avg:1.141, amount:0, dr:[1.7,-1.59,0.37,1.38,2.89,5.09,-0.39,2.08,1.65,2.97,-1.55,-2.33,1.82,0.98,2.12,-3.58,4.25,4.54,-0.42,-0.93,2.78,-3.62,-4.3,4.91,2.77,0.51,-4.35,-2.87]},
   {seq:22, name:"国富创新科技混合A", code:"002692", buy:92, def:41.68, tag:null, sNav:4.364, latestNav:null, ret:null, days:18, sumR:17.01, up:13, dn:5, avg:0.945, amount:0, dr:[1.37,-2.52,0.33,-0.37,2.54,5.6,0.48,1.79,1.25,2.35,-1.09,-3.85,1.49,0.81,1.24,-4.14,6.1,4.44,-0.31,-1.83,2.94,-0.1,-5.35,6.56,3.51,2.61,-4.11,-1.31]},
   {seq:23, name:"德邦鑫星价值灵活配置混合A", code:"001412", buy:87.81, def:22.95, tag:null, sNav:5.1369, latestNav:null, ret:null, days:18, sumR:22.06, up:13, dn:5, avg:1.225, amount:0, dr:[0.67,-1.48,1.13,0.35,0.37,6.09,0.67,3.33,2.24,3.94,-1.88,-2.1,0.26,-1.63,0.92,-4.25,6.41,5.51,0.31,-1.09,2.86,-1.66,-5.74,5.83,4.29,0.96,-4.43,-3.96]},
-  {seq:24, name:"前海开源沪港深乐享生活灵活配置混合", code:"004320", buy:92.45, def:46.09, tag:null, sNav:5.5573, latestNav:null, ret:null, days:18, sumR:18.28, up:13, dn:5, avg:1.016, amount:0, dr:[0.86,-2.36,0.58,1.14,2.2,5.05,3.33,3.37,1.26,3,-0.96,-2.69,0.55,-0.4,1.38,-6.11,5.42,3.8,-1.19,-0.16,4.16,-2.39,-6.16,5.07,5.34,-0.2,-3.41,-4.9]}
+  {seq:24, name:"前海开源沪港深乐享生活灵活配置混合", code:"004320", buy:92.45, def:46.09, tag:null, sNav:5.5573, latestNav:null, ret:null, days:18, sumR:18.28, up:13, dn:5, avg:1.016, amount:0, dr:[0.86,-2.36,0.58,1.14,2.2,5.05,3.33,3.37,1.26,3,-0.96,-2.69,0.55,-0.4,1.38,-6.11,5.42,3.8,-1.19,-0.16,4.16,-2.39,-6.16,5.07,5.34,-0.2,-3.41,-4.9]},
+  // 以下为用户通过搜索添加的基金（恢复自云同步数据）
+  {seq:25, name:"华商致远回报混合C", code:"024460", buy:null, def:null, tag:null, sNav:3.8751, latestNav:null, ret:null, days:0, sumR:0, up:0, dn:0, avg:0, amount:0, dr:[]},
+  {seq:26, name:"易方达全球成长精选混合(QDII)人民币C", code:"012922", buy:null, def:null, tag:null, sNav:4.7333, latestNav:null, ret:null, days:0, sumR:0, up:0, dn:0, avg:0, amount:0, dr:[]},
+  {seq:27, name:"鹏华创新未来混合(LOF)C", code:"501205", buy:null, def:null, tag:null, sNav:1.1799, latestNav:null, ret:null, days:0, sumR:0, up:0, dn:0, avg:0, amount:0, dr:[]},
+  {seq:28, name:"华夏上证科创板半导体材料设备主题ETF发起式联接A", code:"024417", buy:null, def:null, tag:null, sNav:2.4606, latestNav:null, ret:null, days:0, sumR:0, up:0, dn:0, avg:0, amount:0, dr:[]},
+  {seq:29, name:"嘉实全球产业升级股票发起式(QDII)C", code:"017731", buy:null, def:null, tag:null, sNav:4.3608, latestNav:null, ret:null, days:0, sumR:0, up:0, dn:0, avg:0, amount:0, dr:[]},
+  {seq:30, name:"国寿安保数字经济股票发起式C", code:"020723", buy:null, def:null, tag:null, sNav:3.1701, latestNav:null, ret:null, days:0, sumR:0, up:0, dn:0, avg:0, amount:0, dr:[]},
+  {seq:31, name:"国泰金鹏蓝筹混合", code:"020009", buy:null, def:null, tag:null, sNav:2.1, latestNav:null, ret:null, days:0, sumR:0, up:0, dn:0, avg:0, amount:0, dr:[]},
+  {seq:32, name:"东吴移动互联混合C", code:"002170", buy:null, def:null, tag:null, sNav:8.1041, latestNav:null, ret:null, days:0, sumR:0, up:0, dn:0, avg:0, amount:0, dr:[]},
+  {seq:33, name:"中欧半导体产业股票发起C", code:"019764", buy:null, def:null, tag:null, sNav:2.4291, latestNav:null, ret:null, days:0, sumR:0, up:0, dn:0, avg:0, amount:0, dr:[]},
+  {seq:34, name:"金信量化精选混合A", code:"002862", buy:null, def:null, tag:null, sNav:2.1881, latestNav:null, ret:null, days:0, sumR:0, up:0, dn:0, avg:0, amount:0, dr:[]},
+  {seq:35, name:"诺德新生活混合C", code:"006888", buy:null, def:null, tag:null, sNav:4.1132, latestNav:null, ret:null, days:0, sumR:0, up:0, dn:0, avg:0, amount:0, dr:[]},
+  {seq:36, name:"华商均衡成长混合A", code:"011369", buy:null, def:null, tag:null, sNav:4.7228, latestNav:null, ret:null, days:0, sumR:0, up:0, dn:0, avg:0, amount:0, dr:[]},
+  {seq:37, name:"财通品质甄选混合C", code:"024481", buy:null, def:null, tag:null, sNav:2.5247, latestNav:null, ret:null, days:0, sumR:0, up:0, dn:0, avg:0, amount:0, dr:[]},
+  {seq:38, name:"景顺长城研究精选股票C", code:"018998", buy:null, def:null, tag:null, sNav:4.519, latestNav:null, ret:null, days:0, sumR:0, up:0, dn:0, avg:0, amount:0, dr:[]},
+  {seq:39, name:"永赢锐见进取混合C", code:"022718", buy:null, def:null, tag:null, sNav:3.0204, latestNav:null, ret:null, days:0, sumR:0, up:0, dn:0, avg:0, amount:0, dr:[]},
+  {seq:40, name:"易方达信息行业精选股票C", code:"019024", buy:null, def:null, tag:null, sNav:3.2294, latestNav:null, ret:null, days:0, sumR:0, up:0, dn:0, avg:0, amount:0, dr:[]},
+  {seq:41, name:"中航机遇领航混合发起A", code:"018956", buy:null, def:null, tag:null, sNav:6.0171, latestNav:null, ret:null, days:0, sumR:0, up:0, dn:0, avg:0, amount:0, dr:[]}
 ];
+
+// ============================================================
+// 自定义基金持久化（localStorage + 云同步）
+// ============================================================
+const CUSTOM_FUND_KEY = 'fund_custom_list';
+
+// 保存自定义基金列表到 localStorage
+function saveCustomFunds() {
+  const hardcodedCodes = ['006533','373020','011452','014143','007817','001438','024459','006503','016371','013613','011370','018957','016579','026210','019032','017102','016665','017811','000688','002692','001412','004320',
+    '024460','012922','501205','024417','017731','020723','020009','002170','019764','002862','006888','011369','024481','018998','022718','019024','018956'];
+  const custom = FUNDS.filter(f => !hardcodedCodes.includes(f.code)).map(f => ({
+    name: f.name, code: f.code, sNav: f.sNav, buy: f.buy, def: f.def, tag: f.tag
+  }));
+  localStorage.setItem(CUSTOM_FUND_KEY, JSON.stringify(custom));
+}
+
+// 从 localStorage 恢复自定义基金
+function loadCustomFunds() {
+  try {
+    const custom = JSON.parse(localStorage.getItem(CUSTOM_FUND_KEY) || '[]');
+    if (!custom.length) return;
+    custom.forEach(cf => {
+      if (!FUNDS.find(f => f.code === cf.code)) {
+        FUNDS.push({
+          seq: FUNDS.length + 1,
+          name: cf.name, code: cf.code,
+          buy: cf.buy || null, def: cf.def || null, tag: cf.tag || null,
+          sNav: cf.sNav || 1, latestNav: null, ret: null, days: 0,
+          sumR: 0, up: 0, dn: 0, avg: 0, amount: 0, dr: []
+        });
+      }
+    });
+  } catch(e) { console.error('[loadCustomFunds]', e); }
+}
+
+// ============================================================
+// 旧 localStorage 持仓金额迁移（fund_amount_{code} → fund_acc_amount_{accId}_{code}）
+// ============================================================
+function migrateOldAmounts() {
+  const defaultAccId = 'acc_1';
+  // 检查是否有账户，如果没有则创建默认账户
+  const accs = getAccounts();
+  let targetAccId;
+  if (accs.length > 0) {
+    targetAccId = accs[0].id;
+  } else {
+    targetAccId = defaultAccId;
+    setAccounts([{id: defaultAccId, name: '默认账户'}]);
+  }
+  // 扫描旧格式的 fund_amount_* 键
+  let migrated = 0;
+  Object.keys(localStorage).forEach(k => {
+    if (k.startsWith('fund_amount_') && !k.startsWith('fund_acc_amount_')) {
+      const code = k.replace('fund_amount_', '');
+      const val = parseFloat(localStorage.getItem(k));
+      if (val > 0) {
+        const newKey = accAmountKey(targetAccId, code);
+        if (!localStorage.getItem(newKey)) {
+          localStorage.setItem(newKey, String(val));
+          migrated++;
+        }
+      }
+      localStorage.removeItem(k);
+    }
+  });
+  if (migrated > 0) {
+    console.log(`[migrateOldAmounts] 迁移了 ${migrated} 条旧持仓数据`);
+  }
+}
 
 // ============================================================
 // 基金增减管理 + 回收站（localStorage）
@@ -1044,6 +1137,14 @@ function removeFund(code) {
     hidden.push(code);
     setHiddenCodes(hidden);
   }
+  // 如果是自定义基金，从 localStorage 也移除
+  try {
+    const custom = JSON.parse(localStorage.getItem(CUSTOM_FUND_KEY) || '[]');
+    const filtered = custom.filter(c => c.code !== code);
+    if (filtered.length !== custom.length) {
+      localStorage.setItem(CUSTOM_FUND_KEY, JSON.stringify(filtered));
+    }
+  } catch(e) {}
   renderAll();
 }
 
@@ -1109,6 +1210,7 @@ async function addFundBySearch(query) {
       amount: 0, dr: []
     };
     FUNDS.push(newFund);
+    saveCustomFunds();
     await fetchAllHistory();
     renderAll();
     return newFund;
@@ -2490,6 +2592,10 @@ function getLastTradingDay() {
 }
 
 async function init() {
+  // 迁移旧格式持仓金额（fund_amount_* → fund_acc_amount_*）
+  migrateOldAmounts();
+  // 从 localStorage 恢复自定义基金
+  loadCustomFunds();
   // 初始化统计起始日期选择器
   const dateInput = document.getElementById('statStartDate');
   if (dateInput) dateInput.value = STAT_START_ISO;
