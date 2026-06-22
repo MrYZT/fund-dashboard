@@ -366,6 +366,69 @@ td.today-td { background: rgba(88,166,255,0.04); }
 }
 .acc-amount-input:focus { border-color: var(--blue); }
 .acc-total-hint { font-size: 11px; color: var(--muted); white-space: nowrap; }
+
+/* ============================================================
+   手机端响应式（≤767px）
+   - header/账户栏 取消 sticky，随页面滚动
+   - 卡片横向缩小
+   - table-wrap 取消 max-height 限制，整体页面滚动
+   - 仅 thead th 保留 sticky（由浏览器随表格容器滚动）
+   ============================================================ */
+@media (max-width: 767px) {
+  /* Header 不再固定在顶部 */
+  .header {
+    position: static;
+    flex-wrap: wrap;
+    padding: 10px 12px;
+    gap: 8px;
+  }
+  .header h1 { font-size: 15px; }
+  .actions {
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .actions .btn { font-size: 11px; padding: 5px 8px; }
+
+  /* 账户栏不再是任何 sticky 容器 */
+  .account-bar { position: static; }
+
+  /* main 正常流，不 overflow */
+  .main { padding: 8px; overflow-x: visible; }
+
+  /* 卡片改为2列 */
+  .cards {
+    grid-template-columns: repeat(2, 1fr);
+    min-width: unset;
+  }
+
+  /* table-wrap：移动端取消 max-height，整页自由滚动 */
+  .table-wrap {
+    max-height: none;
+    overflow-x: auto;
+    overflow-y: visible;
+    border-radius: 6px;
+  }
+
+  /* thead th sticky：在整页滚动时，需要相对于视口冻结 */
+  thead th {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  th.name-col {
+    position: sticky;
+    left: 0;
+    top: 0;
+    z-index: 20;
+  }
+
+  /* 基金名列稍窄 */
+  th.name-col, td.name-col { min-width: 140px; }
+
+  /* 日期选择器在手机上也折行 */
+  .date-picker-wrap { flex-wrap: wrap; }
+}
 </style>
 </head>
 <body>
@@ -742,6 +805,7 @@ function exportPositionsData() {
     accounts: getAccounts(),
     statStartDate: STAT_START_ISO,
     customFunds: JSON.parse(localStorage.getItem(CUSTOM_FUND_KEY) || '[]'),
+    dividendSettledDate: getDividendSettledDate(),
     positions: {}
   };
   // 收集所有账户下所有基金的持仓金额
@@ -779,6 +843,10 @@ function importPositionsData(data) {
   if (data.customFunds && Array.isArray(data.customFunds)) {
     localStorage.setItem(CUSTOM_FUND_KEY, JSON.stringify(data.customFunds));
     loadCustomFunds();
+  }
+  // 导入分红结算日期（防止跨设备重复结算）
+  if (data.dividendSettledDate) {
+    setDividendSettledDate(data.dividendSettledDate);
   }
   // 导入持仓金额
   if (data.positions) {
@@ -939,6 +1007,99 @@ function autoCloudPush() {
   if (!getGhToken()) return; // 没配 Token 则跳过
   if (_pushTimer) clearTimeout(_pushTimer);
   _pushTimer = setTimeout(() => cloudPush(), 5000);
+}
+
+// ============================================================
+// 每日自动分红系统
+// 每个交易日的涨跌幅收益自动滚入次日持仓（利润再投资/每日复利）
+// 结算时机：init 时历史数据加载完成后自动执行
+// 防重复：DIVIDEND_KEY 记录最后结算日，并随云同步跨设备共享
+// ============================================================
+const DIVIDEND_KEY = 'fund_dividend_settled_date';
+
+function getDividendSettledDate() {
+  return localStorage.getItem(DIVIDEND_KEY) || '';
+}
+function setDividendSettledDate(iso) {
+  localStorage.setItem(DIVIDEND_KEY, iso);
+}
+
+// 结算单个交易日的分红：各账户各基金 持仓×涨跌幅 滚入持仓
+function settleDividendForDate(md) {
+  const cache = getCache();
+  const accs = getAccounts();
+  let dayDividend = 0;
+  let fundCount = 0;
+
+  accs.forEach(acc => {
+    FUNDS.forEach(f => {
+      const amount = loadAccAmount(acc.id, f.code);
+      if (amount <= 0) return;
+      const changePct = cache[cacheKey(f.code, md)];
+      if (changePct === undefined || changePct === null || isNaN(changePct)) return;
+      // 收益 = 持仓 × (涨跌幅/100)
+      const dividend = amount * (changePct / 100);
+      if (Math.abs(dividend) < 0.005) return; // 忽略极小变动
+      saveAccAmount(acc.id, f.code, dividend);
+      dayDividend += dividend;
+      fundCount++;
+    });
+  });
+
+  return { dividend: dayDividend, fundCount };
+}
+
+// 结算所有待结算的交易日（lastSettled之后、今天之前）
+// 幂等：通过 lastSettledDate 保证不会重复结算同一天
+function settlePendingDividends() {
+  const lastSettledISO = getDividendSettledDate();
+  const todayMD = bjTodayKey();
+  const todayISO = bjTodayISO();
+
+  // 首次启用：设为今天，不追溯历史（之前的持仓是用户手动管理的）
+  if (!lastSettledISO) {
+    setDividendSettledDate(todayISO);
+    toast('💡 已启用每日分红功能，将从明日起自动结算当日涨跌收益并滚入持仓', '');
+    return;
+  }
+
+  const cache = getCache();
+  // 找出需要结算的交易日：lastSettled之后、今天之前（今天涨跌未定，不结算）
+  const datesToSettle = DATES.filter(d => {
+    const iso = mdToISO(d);
+    if (normDate(d) === normDate(todayMD)) return false; // 跳过今天
+    if (iso <= lastSettledISO) return false; // 跳过已结算
+    return true;
+  });
+
+  if (datesToSettle.length === 0) return;
+
+  let totalDividend = 0;
+  let settledDates = 0;
+  let settledFundCount = 0;
+
+  datesToSettle.forEach(md => {
+    // 检查该日是否有涨跌幅数据（至少一支基金有数据才结算）
+    let hasData = false;
+    FUNDS.forEach(f => {
+      if (cache[cacheKey(f.code, md)] !== undefined) hasData = true;
+    });
+    if (!hasData) return; // 没数据，跳过等下次
+
+    const result = settleDividendForDate(md);
+    totalDividend += result.dividend;
+    settledFundCount += result.fundCount;
+    settledDates++;
+    setDividendSettledDate(mdToISO(md));
+  });
+
+  if (settledDates > 0) {
+    const sign = totalDividend >= 0 ? '+' : '';
+    toast(`📊 已结算 ${settledDates} 个交易日分红，收益 ${sign}${totalDividend.toFixed(2)} 元（${settledFundCount}笔）`, totalDividend >= 0 ? 'ok' : 'err');
+    renderCards();
+    renderTable();
+    autoCloudPush(); // 分红变更后推送云端
+  }
 }
 
 // 工具函数（使用北京时间）
@@ -2615,6 +2776,7 @@ async function init() {
     }
     try {
       await fetchAllHistory({ autoFetchToday: false });
+      settlePendingDividends(); // 历史数据加载完成后结算每日分红
     } catch(e) {
       console.error('[init] fetchAllHistory 出错:', e);
       toast('⚠️ 自动获取数据失败，请尝试手动点击按钮', 'err');
