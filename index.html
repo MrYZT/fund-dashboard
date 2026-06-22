@@ -1019,14 +1019,13 @@ function exportHistoryCSV() {
   toast('✅ CSV 已导出', 'ok');
 }
 
-// ============================================================
-// 每日投资分析功能
-// 结合各账户持仓、各基金涨跌，生成投资分析及建议
-// ============================================================
-function showInvestAnalysis() {
+// 根据指定日期生成投资分析（支持历史日期查看）
+function showInvestAnalysis(targetDate) {
   const cache = getCache();
   const accs = getAccounts();
   const today = todayKey();
+  // 如果没传日期，默认今天
+  const selDate = targetDate || today;
   const displayFunds = getActiveFunds();
 
   if (displayFunds.length === 0) {
@@ -1040,18 +1039,20 @@ function showInvestAnalysis() {
     const ud = calcUpDownDays(f);
     const dynAvg = calcAvgDailyReturn(f);
     const totalAmount = getFundAmount(f.code, 'all');
-    const todayVal = cache[cacheKey(f.code, today)];
+    const todayVal = cache[cacheKey(f.code, selDate)];
     const sharpe = calcSharpe(f.code, cache);
     const maxdd = calcMaxDrawdown(f, getNavCache(), cache);
     const wr = calcWinRate(f.code, cache);
     const score = calcTotalScore(f, getNavCache(), cache).total;
-    // 近5日涨跌趋势
-    const recent5 = DATES.slice(-5).map(d => cache[cacheKey(f.code, d)]).filter(v => v != null);
+    // 近5日涨跌趋势（基于选中日期往前5个交易日）
+    const selIdx = DATES.indexOf(selDate);
+    const recent5Dates = selIdx >= 0 ? DATES.slice(Math.max(0, selIdx - 4), selIdx + 1) : DATES.slice(-5);
+    const recent5 = recent5Dates.map(d => cache[cacheKey(f.code, d)]).filter(v => v != null);
     const recent5Avg = recent5.length > 0 ? recent5.reduce((s,v) => s+v, 0) / recent5.length : null;
-    // 连续亏损天数
+    // 连续亏损天数（从选中日期往前数）
     let consecLoss = 0;
-    const recentDates = [...DATES].reverse();
-    for (const d of recentDates) {
+    const datesBefore = DATES.filter(d => normDate(d) <= normDate(selDate)).reverse();
+    for (const d of datesBefore) {
       const v = cache[cacheKey(f.code, d)];
       if (v != null) {
         if (v < 0) consecLoss++;
@@ -1087,11 +1088,11 @@ function showInvestAnalysis() {
   const overallTrend = allTodayGain >= 0 ? '盈利' : '亏损';
   const overallColor = allTodayGain >= 0 ? 'var(--red)' : 'var(--green)';
   sections.push({
-    title: '📊 今日整体概况',
+    title: '📊 整体概况',
     items: [
-      { text: `全部账户今日${overallTrend} <b style="color:${overallColor}">${allTodayGain >= 0 ? '+' : ''}${allTodayGain.toFixed(0)} 元</b>（收益率 ${allTotal > 0 ? (allTodayGain / allTotal * 100).toFixed(3) : 0}%）`, type: allTodayGain >= 0 ? 'positive' : 'negative' },
+      { text: `${normDate(selDate) === normDate(today) ? '今日' : fmtDate(selDate)}${overallTrend} <b style="color:${overallColor}">${allTodayGain >= 0 ? '+' : ''}${allTodayGain.toFixed(0)} 元</b>（收益率 ${allTotal > 0 ? (allTodayGain / allTotal * 100).toFixed(3) : 0}%）`, type: allTodayGain >= 0 ? 'positive' : 'negative' },
       ...accTotals.map(a => ({
-        text: `${a.name}：持仓 ¥${a.total.toFixed(0)}，今日收益 <b style="color:${a.todayGain >= 0 ? 'var(--red)' : 'var(--green)'}">${a.todayGain >= 0 ? '+' : ''}${a.todayGain.toFixed(0)} 元</b>（${a.todayReturn.toFixed(3)}%）`,
+        text: `${a.name}：持仓 ¥${a.total.toFixed(0)}，收益 <b style="color:${a.todayGain >= 0 ? 'var(--red)' : 'var(--green)'}">${a.todayGain >= 0 ? '+' : ''}${a.todayGain.toFixed(0)} 元</b>（${a.todayReturn.toFixed(3)}%）`,
         type: a.todayGain >= 0 ? 'positive' : 'negative'
       }))
     ]
@@ -1103,7 +1104,7 @@ function showInvestAnalysis() {
   const bottom3 = withToday.slice(-3).reverse();
   if (top3.length > 0) {
     sections.push({
-      title: '🔥 今日最亮眼',
+      title: '🔥 涨幅领先',
       items: top3.map(fd => ({
         text: `<b>${fd.name}</b>（${fd.code}）涨幅 <b style="color:var(--red)">+${fd.todayVal.toFixed(2)}%</b>${fd.hasAmount ? `，持仓收益约 +${(fd.totalAmount * fd.todayVal / 100).toFixed(0)} 元` : ''}`,
         type: 'positive'
@@ -1112,7 +1113,7 @@ function showInvestAnalysis() {
   }
   if (bottom3.length > 0) {
     sections.push({
-      title: '⚠️ 今日需关注',
+      title: '⚠️ 跌幅靠前',
       items: bottom3.map(fd => ({
         text: `<b>${fd.name}</b>（${fd.code}）跌幅 <b style="color:var(--green)">${fd.todayVal.toFixed(2)}%</b>${fd.hasAmount ? `，持仓亏损约 ${(fd.totalAmount * fd.todayVal / 100).toFixed(0)} 元` : ''}`,
         type: 'negative'
@@ -1166,7 +1167,12 @@ function showInvestAnalysis() {
         type: poor.some(fd => fd.hasAmount) ? 'warning' : 'info'
       });
     }
-    if (scoreItems.length > 0) sections.push({ title: '🏆 评分表现', items: scoreItems });
+    // 评分说明
+    scoreItems.push({
+      text: `<span style="color:var(--muted);font-size:11px">评分模型v2：夏普比率25分（风险调整收益）+ 最大回撤20分（下行风险）+ 卡尔玛比率15分（收益效率）+ 修复天数20分（恢复能力）+ 胜率20分（一致性）。采用连续评分，无阶梯跳变。</span>`,
+      type: 'info'
+    });
+    if (scoreItems.length > 1) sections.push({ title: '🏆 评分表现', items: scoreItems });
   }
 
   // 6. 近期趋势
@@ -1204,9 +1210,9 @@ function showInvestAnalysis() {
   }
   // 积极面
   if (allTodayGain > 0) {
-    suggestions.push({ text: '✅ <b>今日整体盈利</b>，继续保持当前持仓策略', type: 'positive' });
+    suggestions.push({ text: '✅ <b>当日整体盈利</b>，继续保持当前持仓策略', type: 'positive' });
   } else if (allTodayGain < 0) {
-    suggestions.push({ text: '💡 <b>今日整体亏损</b>，不必恐慌，短期波动是正常现象，关注长期趋势', type: 'info' });
+    suggestions.push({ text: '💡 <b>当日整体亏损</b>，不必恐慌，短期波动是正常现象，关注长期趋势', type: 'info' });
   }
   // 加仓建议
   const goodButNoPosition = scored.filter(fd => fd.score >= 60 && !fd.hasAmount && fd.todayVal != null);
@@ -1222,10 +1228,6 @@ function showInvestAnalysis() {
         : item.type === 'negative' ? 'rgba(0,200,100,0.06)'
         : item.type === 'warning' ? 'rgba(240,136,62,0.08)'
         : 'rgba(88,166,255,0.06)';
-      const icon = item.type === 'positive' ? '' 
-        : item.type === 'negative' ? '' 
-        : item.type === 'warning' ? '' 
-        : '';
       return `<div style="padding:8px 12px;border-radius:6px;background:${bgColor};margin-bottom:6px;font-size:13px;line-height:1.5">${item.text}</div>`;
     }).join('');
     return `<div style="margin-bottom:16px">
@@ -1234,12 +1236,28 @@ function showInvestAnalysis() {
     </div>`;
   }).join('');
 
+  // 日期选择器：4/27以来所有交易日
+  let dateOpts = DATES.map(d => {
+    const sel = normDate(d) === normDate(selDate) ? 'selected' : '';
+    return `<option value="${d}" ${sel}>${fmtDate(d)}</option>`;
+  }).join('');
+  // 今天不在DATES中时加入
+  if (!DATES.some(d => normDate(d) === normDate(today))) {
+    const sel = normDate(today) === normDate(selDate) ? 'selected' : '';
+    dateOpts += `<option value="${today}" ${sel}>${fmtDate(today)}（今日）</option>`;
+  }
+
   const html = `
     <div class="modal-overlay" id="investAnalysisOverlay" onclick="if(event.target===this)closeModal('investAnalysisOverlay')">
       <div class="modal-box" style="width:680px;max-width:92vw;max-height:88vh">
-        <div class="modal-title">🧠 每日投资分析 · ${fmtDate(today)}</div>
+        <div class="modal-title" style="display:flex;align-items:center;gap:10px">
+          🧠 投资分析
+          <select id="analysisDateSelect" onchange="closeModal('investAnalysisOverlay');showInvestAnalysis(this.value)" style="font-size:13px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--card);color:var(--text);cursor:pointer">
+            ${dateOpts}
+          </select>
+        </div>
         <div style="font-size:11px;color:var(--muted);margin-bottom:8px">
-          基于当前持仓金额、今日涨跌幅、近期趋势和评分模型自动生成。<span style="color:#f0883e">仅供参考，不构成投资建议。</span>
+          基于当前持仓金额、当日涨跌幅、近期趋势和评分模型v2自动生成。<span style="color:#f0883e">仅供参考，不构成投资建议。</span>
         </div>
         <div class="scroll-body" style="max-height:65vh;overflow:auto;padding-right:4px">
           ${sectionHtml}
@@ -2287,74 +2305,57 @@ function calcWinRate(code, cache) {
 }
 
 // ============================================================
-// 总评分模型（满分100）
-// 基于经典基金评价理论 五维度加权
+// 总评分模型（满分100）v2
+// 五维度加权，连续评分（无阶梯跳变）
 // 权重：夏普比率25% + 最大回撤20% + 卡尔玛比率15% + 修复天数20% + 胜率20%
 // ============================================================
+
+// 连续评分辅助：将值从 [lo, hi] 线性映射到 [0, maxScore]，超出范围 clamp
+function _linearScore(value, lo, hi, maxScore) {
+  if (value == null) return 0;
+  const t = Math.max(0, Math.min(1, (value - lo) / (hi - lo)));
+  return Math.round(t * maxScore * 10) / 10; // 保留1位小数
+}
+
 function calcTotalScore(f, cache, navCacheArg) {
   const nc = navCacheArg || getNavCache();
   const c  = cache || getCache();
 
-  // 1. 夏普比率 (25分) — 分段打分：>=2:25, >=1.5:22, >=1:18, >=0.5:12, >=0:6, <0:0
+  // 1. 夏普比率 (25分) — 范围 [-1, 3] 映射到 [0, 25]
+  //    夏普<0 风险调整后亏损，0-1一般，1-2良好，>2优秀
   const sharpe = calcSharpe(f.code, c);
-  let sScore = 0;
-  if (sharpe !== null) {
-    if (sharpe >= 2)   sScore = 25;
-    else if (sharpe >= 1.5) sScore = 22;
-    else if (sharpe >= 1)   sScore = 18;
-    else if (sharpe >= 0.5) sScore = 12;
-    else if (sharpe >= 0)   sScore =  6;
-    else                    sScore =  0;
-  }
+  const sScore = _linearScore(sharpe, -1, 3, 25);
 
-  // 2. 最大回撤 (20分) — 越小越好：>-5%:20, >-10%:16, >-15%:11, >-25%:6, <=−25%:0
+  // 2. 最大回撤 (20分) — 越小越好，范围 [-30%, 0%] 映射到 [0, 20]
+  //    0%无回撤=满分，-15%中等，>-30%极差
   const maxdd = calcMaxDrawdown(f, nc, c);
-  let dScore = 0;
-  if (maxdd !== null) {
-    if      (maxdd > -5)  dScore = 20;
-    else if (maxdd > -10) dScore = 16;
-    else if (maxdd > -15) dScore = 11;
-    else if (maxdd > -25) dScore =  6;
-    else                  dScore =  0;
-  }
+  const dScore = _linearScore(maxdd, -30, 0, 20);
 
-  // 3. 卡尔玛比率 (15分) — 越大越好：>=3:15, >=2:13, >=1:10, >=0.5:6, >=0:3, <0:0
+  // 3. 卡尔玛比率 (15分) — 年化收益率/|最大回撤|，范围 [-1, 5] 映射到 [0, 15]
+  //    <0 亏损放大，0-1一般，1-3良好，>3优秀
   const calmar = calcCalmar(f, nc, c);
-  let cScore = 0;
-  if (calmar !== null) {
-    if      (calmar >= 3)   cScore = 15;
-    else if (calmar >= 2)   cScore = 13;
-    else if (calmar >= 1)   cScore = 10;
-    else if (calmar >= 0.5) cScore =  6;
-    else if (calmar >= 0)   cScore =  3;
-    else                    cScore =  0;
-  }
+  const cScore = _linearScore(calmar, -1, 5, 15);
 
-  // 4. 修复天数 (20分) — 越短越好：<=3天:20, <=7:16, <=14:11, <=21:6, 未恢复:0
+  // 4. 修复天数 (20分) — 越短越好，反向映射 [30天, 0天] → [0, 20]
+  //    0天=已恢复满分，<=7天良好，>30天或未恢复=0分
   const recovery = calcRecoveryDays(f, nc, c);
   let rScore = 0;
   if (recovery !== null) {
-    if      (recovery > 0 && recovery <= 3)  rScore = 20;
-    else if (recovery > 0 && recovery <= 7)  rScore = 16;
-    else if (recovery > 0 && recovery <= 14) rScore = 11;
-    else if (recovery > 0 && recovery <= 21) rScore =  6;
-    else if (recovery > 0)                   rScore =  3;
-    // recovery <= 0 (未恢复) 得0分
+    if (recovery > 0) {
+      // 已恢复：天数越少分越高，[30, 0] → [0, 20]
+      rScore = _linearScore(-recovery, -30, 0, 20);
+    } else {
+      // 未恢复（负值，绝对值=距谷底天数）
+      rScore = 0;
+    }
   }
 
-  // 5. 胜率 (20分) — >=65%:20, >=60%:17, >=55%:13, >=50%:9, >=45%:5, <45%:0
+  // 5. 胜率 (20分) — 范围 [30%, 75%] 映射到 [0, 20]
+  //    <40%很低，50%一般，>60%良好，>70%优秀
   const wr = calcWinRate(f.code, c);
-  let wScore = 0;
-  if (wr !== null) {
-    if      (wr >= 65) wScore = 20;
-    else if (wr >= 60) wScore = 17;
-    else if (wr >= 55) wScore = 13;
-    else if (wr >= 50) wScore =  9;
-    else if (wr >= 45) wScore =  5;
-    else               wScore =  0;
-  }
+  const wScore = _linearScore(wr, 30, 75, 20);
 
-  const total = sScore + dScore + cScore + rScore + wScore;
+  const total = Math.round((sScore + dScore + cScore + rScore + wScore) * 10) / 10;
   return { total, sScore, dScore, cScore, rScore, wScore };
 }
 
@@ -2419,22 +2420,38 @@ async function fetchHistory(code, startDate, endDate) {
   const MAX_RETRIES = 2;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const result = await _fetchHistoryF10(code, startDate, endDate);
-      if (result !== null && result.length > 0) return result;
-      if (attempt < MAX_RETRIES) await sleep(200);
+      // 第1页
+      const page1 = await _fetchHistoryF10(code, startDate, endDate, 1);
+      if (page1 === null || page1.records.length === 0) {
+        if (attempt < MAX_RETRIES) { await sleep(300); continue; }
+        return null;
+      }
+      let allRecords = [...page1.records];
+      // 如果有多页，继续获取后续页
+      if (page1.totalPages > 1) {
+        for (let p = 2; p <= page1.totalPages; p++) {
+          await sleep(100); // 避免请求过快
+          const pageN = await _fetchHistoryF10(code, startDate, endDate, p);
+          if (pageN && pageN.records.length > 0) {
+            allRecords = allRecords.concat(pageN.records);
+          }
+        }
+      }
+      console.log(`[fetchHistory] ${code} 成功获取 ${allRecords.length} 条 (共${page1.totalPages}页, F10DataApi)`);
+      return allRecords;
     } catch(e) {
       console.warn(`[fetchHistory] ${code} 第${attempt}次失败: ${e.message}`);
-      if (attempt < MAX_RETRIES) await sleep(200);
+      if (attempt < MAX_RETRIES) await sleep(300);
       else return null;
     }
   }
   return null;
 }
 
-async function _fetchHistoryF10(code, startDate, endDate) {
+async function _fetchHistoryF10(code, startDate, endDate, page) {
   return new Promise((resolve, reject) => {
     const script = document.createElement('script');
-    script.src = `https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code=${code}&page=1&sdate=${startDate}&edate=${endDate}&per=90`;
+    script.src = `https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code=${code}&page=${page}&sdate=${startDate}&edate=${endDate}&per=20`;
     let done = false;
     const timeout = setTimeout(() => {
       if (done) return;
@@ -2454,7 +2471,10 @@ async function _fetchHistoryF10(code, startDate, endDate) {
       done = true;
       try {
         const raw = window.apidata;
-        if (!raw || !raw.content) { cleanup(); resolve(null); return; }
+        if (!raw) { cleanup(); resolve(null); return; }
+        const totalPages = raw.pages || 1;
+        const totalRecords = raw.records || 0;
+        if (!raw.content || totalRecords === 0) { cleanup(); resolve(null); return; }
         // 解析 HTML 表格提取日期、净值、涨跌幅
         const tmp = document.createElement('div');
         tmp.innerHTML = raw.content;
@@ -2470,8 +2490,7 @@ async function _fetchHistoryF10(code, startDate, endDate) {
           }
         });
         cleanup();
-        console.log(`[fetchHistory] ${code} 成功获取 ${records.length} 条 (F10DataApi)`);
-        resolve(records);
+        resolve({ records, totalPages, totalRecords, page });
       } catch(e) { cleanup(); reject(e); }
     };
 
@@ -2790,7 +2809,7 @@ function renderTable() {
     <th class="model-col ${sortCls('calmar')}" style="min-width:68px" onclick="setSort('calmar')" title="年化收益率/|最大回撤|，>2优秀">卡尔玛<div class="model-sub">比率</div></th>
     <th class="model-col ${sortCls('vol')}" style="min-width:68px" onclick="setSort('vol')" title="日收益年化标准差，<20%稳定">年化<div class="model-sub">波动率</div></th>
     <th class="model-col ${sortCls('winrate')}" style="min-width:54px" onclick="setSort('winrate')" title="盈利天数占比，>60%优秀">胜率</th>
-    <th class="model-col ${sortCls('score')}" style="min-width:66px" onclick="setSort('score')" title="综合评分：夏普25%+回撤20%+卡尔玛15%+修复20%+胜率20%，满分100">总评分</th>
+    <th class="model-col ${sortCls('score')}" style="min-width:66px" onclick="setSort('score')" title="综合评分v2：夏普25%+回撤20%+卡尔玛15%+修复20%+胜率20%（连续评分，满分100）">总评分</th>
     <th class="${sortCls('amount')}" style="min-width:80px" onclick="setSort('amount')">持仓金额</th>
     <th class="${sortCls('buy')}" style="min-width:76px" onclick="setSort('buy')">收益能力</th>
     <th class="${sortCls('def')}" style="min-width:76px" onclick="setSort('def')">防守能力</th>
@@ -2851,7 +2870,7 @@ function renderTable() {
 
     // 总评分
     const sc = scoreData.total;
-    const scoreHtml = `<span class="${sc >= 75 ? 'model-good' : sc >= 55 ? 'model-mid' : 'model-bad'}" title="夏普:${scoreData.sScore} 回撤:${scoreData.dScore} 卡尔玛:${scoreData.cScore} 修复:${scoreData.rScore} 胜率:${scoreData.wScore}">${sc}</span>`;
+    const scoreHtml = `<span class="${sc >= 70 ? 'model-good' : sc >= 45 ? 'model-mid' : 'model-bad'}" title="夏普:${scoreData.sScore.toFixed(1)}/25 回撤:${scoreData.dScore.toFixed(1)}/20 卡尔玛:${scoreData.cScore.toFixed(1)}/15 修复:${scoreData.rScore.toFixed(1)}/20 胜率:${scoreData.wScore.toFixed(1)}/20">${sc.toFixed(0)}</span>`;
 
     // 持仓金额 — 点击弹窗调整，多账户管理
     const amountVal = getFundAmount(f.code, currentAccountId);
@@ -3096,7 +3115,7 @@ async function fetchSingleFundHistory(fund) {
   return count;
 }
 
-// 补齐所有缺失历史数据的基金（覆盖率低于95%就补齐，确保所有基金数据都完整）
+// 补齐所有缺失历史数据的基金（任何有缺失数据的都补齐，确保所有基金数据都完整到4/27）
 async function fetchMissingHistory() {
   const btn = document.getElementById('fetchTodayBtn');
   btn.disabled = true;
@@ -3104,10 +3123,10 @@ async function fetchMissingHistory() {
 
   const cache = getCache();
   const allDates = [...DATES];
-  // 找出数据覆盖率 < 95% 的基金（即任何有缺失数据的都补齐）
+  // 找出有任何缺失数据的基金（覆盖率 < 100% 即补齐）
   const missing = getActiveFunds().filter(f => {
-    const filledCount = allDates.filter(d => cache[cacheKey(f.code, d)] !== undefined).length;
-    return allDates.length > 0 && filledCount / allDates.length < 0.95;
+    const missingDates = allDates.filter(d => cache[cacheKey(f.code, d)] === undefined);
+    return missingDates.length > 0;
   });
 
   if (missing.length === 0) {
@@ -3162,9 +3181,9 @@ async function fetchAllHistory({ autoFetchToday = true, force = false } = {}) {
   const fundsToFetch = force ? getActiveFunds() : getActiveFunds().filter(f => {
     // 检查最近交易日是否有数据
     if (cache[cacheKey(f.code, lastTradingDay)] === undefined) return true;
-    // 检查数据覆盖率：覆盖率低于95%就需要补齐
-    const filledCount = allDates.filter(d => cache[cacheKey(f.code, d)] !== undefined).length;
-    if (allDates.length > 0 && filledCount / allDates.length < 0.95) return true;
+    // 检查是否有任何缺失日期（只要缺1天就补齐）
+    const missingCount = allDates.filter(d => cache[cacheKey(f.code, d)] === undefined).length;
+    if (missingCount > 0) return true;
     return false;
   });
 
