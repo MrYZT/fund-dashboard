@@ -490,6 +490,7 @@ td.today-td { background: rgba(88,166,255,0.04); }
     <button class="btn" onclick="showCloudSettings()">⚙️ 云同步</button>
     <button class="btn" onclick="fetchMissingHistory()">📅 补全历史数据</button>
     <button class="btn" onclick="showHistoryReturns()">📈 历史收益</button>
+    <button class="btn" onclick="showInvestAnalysis()">🧠 投资分析</button>
     <button class="btn primary" id="fetchTodayBtn" onclick="fetchTodayData()">⟳ 获取今日涨跌幅</button>
   </div>
 </div>
@@ -1018,7 +1019,241 @@ function exportHistoryCSV() {
   toast('✅ CSV 已导出', 'ok');
 }
 
-// 兼容旧的 saveAmount 调用（保留供 initCache 用）
+// ============================================================
+// 每日投资分析功能
+// 结合各账户持仓、各基金涨跌，生成投资分析及建议
+// ============================================================
+function showInvestAnalysis() {
+  const cache = getCache();
+  const accs = getAccounts();
+  const today = todayKey();
+  const displayFunds = getActiveFunds();
+
+  if (displayFunds.length === 0) {
+    toast('⚠️ 暂无基金数据', 'err');
+    return;
+  }
+
+  // ---- 数据收集 ----
+  const fundData = displayFunds.map(f => {
+    const dynRet = calcRet(f);
+    const ud = calcUpDownDays(f);
+    const dynAvg = calcAvgDailyReturn(f);
+    const totalAmount = getFundAmount(f.code, 'all');
+    const todayVal = cache[cacheKey(f.code, today)];
+    const sharpe = calcSharpe(f.code, cache);
+    const maxdd = calcMaxDrawdown(f, getNavCache(), cache);
+    const wr = calcWinRate(f.code, cache);
+    const score = calcTotalScore(f, getNavCache(), cache).total;
+    // 近5日涨跌趋势
+    const recent5 = DATES.slice(-5).map(d => cache[cacheKey(f.code, d)]).filter(v => v != null);
+    const recent5Avg = recent5.length > 0 ? recent5.reduce((s,v) => s+v, 0) / recent5.length : null;
+    // 连续亏损天数
+    let consecLoss = 0;
+    const recentDates = [...DATES].reverse();
+    for (const d of recentDates) {
+      const v = cache[cacheKey(f.code, d)];
+      if (v != null) {
+        if (v < 0) consecLoss++;
+        else break;
+      }
+    }
+    return {
+      ...f, dynRet, totalAmount, todayVal, ud, dynAvg,
+      sharpe, maxdd, wr, score, recent5Avg, consecLoss,
+      hasAmount: totalAmount > 0
+    };
+  });
+
+  // 各账户总持仓
+  const accTotals = accs.map(acc => {
+    let total = 0, todayGain = 0;
+    fundData.forEach(fd => {
+      const amt = loadAccAmount(acc.id, fd.code);
+      if (amt > 0) {
+        total += amt;
+        if (fd.todayVal != null) todayGain += amt * fd.todayVal / 100;
+      }
+    });
+    return { id: acc.id, name: acc.name, total, todayGain, todayReturn: total > 0 ? todayGain / total * 100 : 0 };
+  });
+  const allTotal = accTotals.reduce((s, a) => s + a.total, 0);
+  const allTodayGain = accTotals.reduce((s, a) => s + a.todayGain, 0);
+
+  // ---- 分析生成 ----
+  const sections = [];
+
+  // 1. 整体概况
+  const overallTrend = allTodayGain >= 0 ? '盈利' : '亏损';
+  const overallColor = allTodayGain >= 0 ? 'var(--red)' : 'var(--green)';
+  sections.push({
+    title: '📊 今日整体概况',
+    items: [
+      { text: `全部账户今日${overallTrend} <b style="color:${overallColor}">${allTodayGain >= 0 ? '+' : ''}${allTodayGain.toFixed(0)} 元</b>（收益率 ${allTotal > 0 ? (allTodayGain / allTotal * 100).toFixed(3) : 0}%）`, type: allTodayGain >= 0 ? 'positive' : 'negative' },
+      ...accTotals.map(a => ({
+        text: `${a.name}：持仓 ¥${a.total.toFixed(0)}，今日收益 <b style="color:${a.todayGain >= 0 ? 'var(--red)' : 'var(--green)'}">${a.todayGain >= 0 ? '+' : ''}${a.todayGain.toFixed(0)} 元</b>（${a.todayReturn.toFixed(3)}%）`,
+        type: a.todayGain >= 0 ? 'positive' : 'negative'
+      }))
+    ]
+  });
+
+  // 2. 涨跌表现
+  const withToday = fundData.filter(fd => fd.todayVal != null).sort((a,b) => b.todayVal - a.todayVal);
+  const top3 = withToday.slice(0, 3);
+  const bottom3 = withToday.slice(-3).reverse();
+  if (top3.length > 0) {
+    sections.push({
+      title: '🔥 今日最亮眼',
+      items: top3.map(fd => ({
+        text: `<b>${fd.name}</b>（${fd.code}）涨幅 <b style="color:var(--red)">+${fd.todayVal.toFixed(2)}%</b>${fd.hasAmount ? `，持仓收益约 +${(fd.totalAmount * fd.todayVal / 100).toFixed(0)} 元` : ''}`,
+        type: 'positive'
+      }))
+    });
+  }
+  if (bottom3.length > 0) {
+    sections.push({
+      title: '⚠️ 今日需关注',
+      items: bottom3.map(fd => ({
+        text: `<b>${fd.name}</b>（${fd.code}）跌幅 <b style="color:var(--green)">${fd.todayVal.toFixed(2)}%</b>${fd.hasAmount ? `，持仓亏损约 ${(fd.totalAmount * fd.todayVal / 100).toFixed(0)} 元` : ''}`,
+        type: 'negative'
+      }))
+    });
+  }
+
+  // 3. 持仓集中度分析
+  const withAmount = fundData.filter(fd => fd.hasAmount).sort((a,b) => b.totalAmount - a.totalAmount);
+  const concentrationItems = [];
+  withAmount.forEach(fd => {
+    const pct = allTotal > 0 ? fd.totalAmount / allTotal * 100 : 0;
+    if (pct > 25) {
+      concentrationItems.push({
+        text: `<b>${fd.name}</b> 占比 <b style="color:#f0883e">${pct.toFixed(1)}%</b>（¥${fd.totalAmount.toFixed(0)}），持仓集中度偏高`,
+        type: 'warning'
+      });
+    }
+  });
+  if (concentrationItems.length > 0) {
+    sections.push({ title: '📌 持仓集中度提醒', items: concentrationItems });
+  }
+
+  // 4. 连续亏损预警
+  const consecLossItems = fundData.filter(fd => fd.consecLoss >= 3 && fd.hasAmount).sort((a,b) => b.consecLoss - a.consecLoss);
+  if (consecLossItems.length > 0) {
+    sections.push({
+      title: '🔴 连续亏损预警',
+      items: consecLossItems.map(fd => ({
+        text: `<b>${fd.name}</b> 连续 <b>${fd.consecLoss}</b> 日下跌，持仓 ¥${fd.totalAmount.toFixed(0)}，建议关注止损`,
+        type: 'negative'
+      }))
+    });
+  }
+
+  // 5. 评分表现
+  const scored = fundData.filter(fd => fd.score != null).sort((a,b) => b.score - a.score);
+  if (scored.length > 0) {
+    const excellent = scored.filter(fd => fd.score >= 70);
+    const poor = scored.filter(fd => fd.score < 40);
+    const scoreItems = [];
+    if (excellent.length > 0) {
+      scoreItems.push({
+        text: `综合评分优秀（≥70）：${excellent.map(fd => `<b>${fd.name}</b>(${fd.score.toFixed(0)}分)`).join('、')}`,
+        type: 'positive'
+      });
+    }
+    if (poor.length > 0) {
+      scoreItems.push({
+        text: `综合评分偏低（<40）：${poor.map(fd => `<b>${fd.name}</b>(${fd.score.toFixed(0)}分)`).join('、')}${poor.some(fd => fd.hasAmount) ? '，持有这些低评分基金需谨慎' : ''}`,
+        type: poor.some(fd => fd.hasAmount) ? 'warning' : 'info'
+      });
+    }
+    if (scoreItems.length > 0) sections.push({ title: '🏆 评分表现', items: scoreItems });
+  }
+
+  // 6. 近期趋势
+  const trendingUp = fundData.filter(fd => fd.recent5Avg != null && fd.recent5Avg > 0.5 && fd.hasAmount);
+  const trendingDown = fundData.filter(fd => fd.recent5Avg != null && fd.recent5Avg < -0.5 && fd.hasAmount);
+  const trendItems = [];
+  if (trendingUp.length > 0) {
+    trendItems.push({
+      text: `近5日日均涨幅 >0.5%：${trendingUp.sort((a,b)=>b.recent5Avg-a.recent5Avg).slice(0,5).map(fd => `<b>${fd.name}</b>(+${fd.recent5Avg.toFixed(2)}%/日)`).join('、')}`,
+      type: 'positive'
+    });
+  }
+  if (trendingDown.length > 0) {
+    trendItems.push({
+      text: `近5日日均跌幅 <-0.5%：${trendingDown.sort((a,b)=>a.recent5Avg-b.recent5Avg).slice(0,5).map(fd => `<b>${fd.name}</b>(${fd.recent5Avg.toFixed(2)}%/日)`).join('、')}`,
+      type: 'negative'
+    });
+  }
+  if (trendItems.length > 0) sections.push({ title: '📈 近5日趋势', items: trendItems });
+
+  // 7. 综合建议
+  const suggestions = [];
+  // 建议分散持仓
+  const maxConcentration = withAmount.length > 0 ? Math.max(...withAmount.map(fd => allTotal > 0 ? fd.totalAmount / allTotal * 100 : 0)) : 0;
+  if (maxConcentration > 25) {
+    suggestions.push({ text: '📌 <b>分散持仓</b>：最大单只基金占比超过25%，建议适当分散至其他优质基金以降低集中度风险', type: 'warning' });
+  }
+  // 建议关注止损
+  if (consecLossItems.length > 0) {
+    suggestions.push({ text: '🛡️ <b>关注止损</b>：有基金连续3日以上下跌，如趋势未见反转可考虑减仓止损', type: 'warning' });
+  }
+  // 建议关注低评分
+  if (scored.filter(fd => fd.score < 40 && fd.hasAmount).length > 0) {
+    suggestions.push({ text: '📉 <b>低评分基金</b>：持仓中有综合评分低于40的基金，长期持有需谨慎，可考虑替换为评分更高的同类基金', type: 'warning' });
+  }
+  // 积极面
+  if (allTodayGain > 0) {
+    suggestions.push({ text: '✅ <b>今日整体盈利</b>，继续保持当前持仓策略', type: 'positive' });
+  } else if (allTodayGain < 0) {
+    suggestions.push({ text: '💡 <b>今日整体亏损</b>，不必恐慌，短期波动是正常现象，关注长期趋势', type: 'info' });
+  }
+  // 加仓建议
+  const goodButNoPosition = scored.filter(fd => fd.score >= 60 && !fd.hasAmount && fd.todayVal != null);
+  if (goodButNoPosition.length > 0) {
+    suggestions.push({ text: `💡 <b>可考虑加仓</b>：以下评分≥60但未持仓的基金值得关注：${goodButNoPosition.slice(0,3).map(fd => `<b>${fd.name}</b>(${fd.score.toFixed(0)}分)`).join('、')}`, type: 'info' });
+  }
+  if (suggestions.length > 0) sections.push({ title: '💡 综合投资建议', items: suggestions });
+
+  // ---- 渲染 ----
+  const sectionHtml = sections.map(sec => {
+    const itemHtml = sec.items.map(item => {
+      const bgColor = item.type === 'positive' ? 'rgba(255,100,100,0.06)'
+        : item.type === 'negative' ? 'rgba(0,200,100,0.06)'
+        : item.type === 'warning' ? 'rgba(240,136,62,0.08)'
+        : 'rgba(88,166,255,0.06)';
+      const icon = item.type === 'positive' ? '' 
+        : item.type === 'negative' ? '' 
+        : item.type === 'warning' ? '' 
+        : '';
+      return `<div style="padding:8px 12px;border-radius:6px;background:${bgColor};margin-bottom:6px;font-size:13px;line-height:1.5">${item.text}</div>`;
+    }).join('');
+    return `<div style="margin-bottom:16px">
+      <div style="font-size:14px;font-weight:600;margin-bottom:8px;color:var(--text)">${sec.title}</div>
+      ${itemHtml}
+    </div>`;
+  }).join('');
+
+  const html = `
+    <div class="modal-overlay" id="investAnalysisOverlay" onclick="if(event.target===this)closeModal('investAnalysisOverlay')">
+      <div class="modal-box" style="width:680px;max-width:92vw;max-height:88vh">
+        <div class="modal-title">🧠 每日投资分析 · ${fmtDate(today)}</div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px">
+          基于当前持仓金额、今日涨跌幅、近期趋势和评分模型自动生成。<span style="color:#f0883e">仅供参考，不构成投资建议。</span>
+        </div>
+        <div class="scroll-body" style="max-height:65vh;overflow:auto;padding-right:4px">
+          ${sectionHtml}
+        </div>
+        <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn primary" onclick="closeModal('investAnalysisOverlay')">关闭</button>
+        </div>
+      </div>
+    </div>`;
+
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+
 function loadAmount(code) {
   return getFundAmount(code, currentAccountId);
 }
@@ -2312,6 +2547,16 @@ function calcUpDownDays(f) {
   return { up, dn };
 }
 
+// 动态计算平均日收益：总收益率 / 盈亏总天数
+function calcAvgDailyReturn(f) {
+  const dynRet = calcRet(f);
+  if (dynRet === null) return null;
+  const ud = calcUpDownDays(f);
+  const totalDays = ud.up + ud.dn;
+  if (totalDays === 0) return null;
+  return dynRet / totalDays;
+}
+
 // 对基金列表排序（仅活跃基金）
 function getSortedFunds() {
   const list = [...getAccountFunds()];
@@ -2337,7 +2582,7 @@ function getSortedFunds() {
       case 'amount': return f.amount ?? 0;
       case 'buy': return f.buy ?? null;
       case 'def': return f.def ?? null;
-      case 'avg': return f.avg ?? null;
+      case 'avg': return calcAvgDailyReturn(f) ?? null;
       case 'upDays': return calcUpDownDays(f).up;
       case 'dnDays': return calcUpDownDays(f).dn;
       default: {
@@ -2628,8 +2873,9 @@ function renderTable() {
       ? `<div class="bar-wrap"><div class="bar"><div class="bar-fill" style="width:${f.def}%;background:var(--green)"></div></div><span class="bar-num">${f.def}</span></div>`
       : '<span style="color:var(--muted)">—</span>';
     
-    const avgHtml = f.avg != null
-      ? `<span class="pct ${f.avg>0?'up':'dn'}">${f.avg>0?'+':''}${f.avg.toFixed(3)}%</span>`
+    const dynAvg = calcAvgDailyReturn(f);
+    const avgHtml = dynAvg != null
+      ? `<span class="pct ${dynAvg>0?'up':'dn'}">${dynAvg>0?'+':''}${dynAvg.toFixed(3)}%</span>`
       : '<span class="pct na">—</span>';
     
     const tagHtml = f.tag
@@ -2850,7 +3096,7 @@ async function fetchSingleFundHistory(fund) {
   return count;
 }
 
-// 补齐所有缺失历史数据的基金（只获取数据覆盖率低的基金）
+// 补齐所有缺失历史数据的基金（覆盖率低于95%就补齐，确保所有基金数据都完整）
 async function fetchMissingHistory() {
   const btn = document.getElementById('fetchTodayBtn');
   btn.disabled = true;
@@ -2858,10 +3104,10 @@ async function fetchMissingHistory() {
 
   const cache = getCache();
   const allDates = [...DATES];
-  // 找出数据覆盖率 < 80% 的基金
+  // 找出数据覆盖率 < 95% 的基金（即任何有缺失数据的都补齐）
   const missing = getActiveFunds().filter(f => {
     const filledCount = allDates.filter(d => cache[cacheKey(f.code, d)] !== undefined).length;
-    return allDates.length > 0 && filledCount / allDates.length < 0.8;
+    return allDates.length > 0 && filledCount / allDates.length < 0.95;
   });
 
   if (missing.length === 0) {
@@ -2916,9 +3162,9 @@ async function fetchAllHistory({ autoFetchToday = true, force = false } = {}) {
   const fundsToFetch = force ? getActiveFunds() : getActiveFunds().filter(f => {
     // 检查最近交易日是否有数据
     if (cache[cacheKey(f.code, lastTradingDay)] === undefined) return true;
-    // 检查数据覆盖率：如果该基金在统计区间内的数据点 < 50% 也需要补齐
+    // 检查数据覆盖率：覆盖率低于95%就需要补齐
     const filledCount = allDates.filter(d => cache[cacheKey(f.code, d)] !== undefined).length;
-    if (allDates.length > 0 && filledCount / allDates.length < 0.5) return true;
+    if (allDates.length > 0 && filledCount / allDates.length < 0.95) return true;
     return false;
   });
 
