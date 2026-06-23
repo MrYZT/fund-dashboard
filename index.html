@@ -3066,7 +3066,7 @@ function renderTable() {
   // Header
   const fixedThs = `
     <th class="name-col fixed-th ${sortCls('name')}" style="width:180px;min-width:180px;max-width:180px;white-space:normal;word-break:break-word;overflow-wrap:break-word" onclick="setSort('name')">基金名称</th>
-    <th class="${sortCls('dir')}" style="width:600px;min-width:600px;max-width:600px;white-space:normal;word-break:break-word;overflow-wrap:break-word" onclick="setSort('dir')" title="投资方向+前10大重仓股，点击查看详情">方向与重仓</th>
+    <th class="${sortCls('dir')}" style="width:400px;min-width:400px;max-width:400px;white-space:normal;word-break:break-word;overflow-wrap:break-word" onclick="setSort('dir')" title="投资方向+前10大重仓股，点击查看详情">方向与重仓</th>
     <th class="${sortCls('ret')}" style="min-width:76px" onclick="setSort('ret')">总收益率</th>
     <th class="model-col ${sortCls('sharpe')}" style="min-width:64px" onclick="setSort('sharpe')" title="(年化收益−Rf)/年化波动率，>1优秀">夏普<div class="model-sub">比率</div></th>
     <th class="model-col ${sortCls('maxdd')}" style="min-width:64px" onclick="setSort('maxdd')" title="区间最大净值回撤，越小越稳">最大<div class="model-sub">回撤</div></th>
@@ -3233,7 +3233,7 @@ function renderTable() {
           <span style="cursor:pointer;color:var(--muted);font-size:12px;opacity:0.6;padding:2px;flex-shrink:0" onclick="removeFund('${f.code}')" title="移至回收站">✕</span>
         </div>
       </td>
-      <td style="width:600px;min-width:600px;max-width:600px;overflow:hidden;white-space:normal;word-break:break-word;overflow-wrap:break-word">${dirHoldingsHtml}</td>
+      <td style="width:400px;min-width:400px;max-width:400px;overflow:hidden;white-space:normal;word-break:break-word;overflow-wrap:break-word">${dirHoldingsHtml}</td>
       <td><span class="${retCls}" id="ret_${f.code}" ${navTip}>${retSign}${retVal.toFixed(2)}%</span></td>
       <td>${sharpeHtml}</td>
       <td>${maxddHtml}</td>
