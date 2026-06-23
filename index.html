@@ -1583,20 +1583,15 @@ function settleDividendForDate(md) {
 // 结算所有待结算的交易日（lastSettled之后、今天之前）
 // 幂等：通过 lastSettledDate 保证不会重复结算同一天
 function settlePendingDividends() {
-  let lastSettledISO = getDividendSettledDate();
+  const lastSettledISO = getDividendSettledDate();
   const todayMD = bjTodayKey();
   const todayISO = bjTodayISO();
 
-  // 首次启用：设为统计起始日期的前一天，确保从统计起始日开始结算
-  // （之前首次启用设为今天会导致起始日当天收益永不结算）
+  // 首次启用：设为今天，不追溯历史（之前的持仓是用户手动管理的）
   if (!lastSettledISO) {
-    // 设为统计起始日期前一天
-    const startDate = new Date(STAT_START_ISO + 'T00:00:00+08:00');
-    startDate.setDate(startDate.getDate() - 1);
-    const prevISO = `${startDate.getUTCFullYear()}-${String(startDate.getUTCMonth()+1).padStart(2,'0')}-${String(startDate.getUTCDate()).padStart(2,'0')}`;
-    lastSettledISO = prevISO;
-    setDividendSettledDate(prevISO);
-    console.log(`[分红] 首次启用，基准日设为 ${prevISO}（统计起始日前一天）`);
+    setDividendSettledDate(todayISO);
+    toast('💡 已启用每日分红功能，将从明日起自动结算当日涨跌收益并滚入持仓', '');
+    return;
   }
 
   const cache = getCache();
@@ -1608,10 +1603,7 @@ function settlePendingDividends() {
     return true;
   });
 
-  if (datesToSettle.length === 0) {
-    console.log(`[分红] 无待结算日期 (lastSettled=${lastSettledISO}, today=${todayISO})`);
-    return;
-  }
+  if (datesToSettle.length === 0) return;
 
   let totalDividend = 0;
   let settledDates = 0;
@@ -1639,18 +1631,6 @@ function settlePendingDividends() {
     renderTable();
     autoCloudPush(); // 分红变更后推送云端
   }
-}
-
-// 手动重置分红基准日：将 lastSettledDate 设为指定日期的前一天
-// 这样下次加载时会从该日期开始重新结算
-function resetDividendDate(baseISO) {
-  // baseISO = '2026-06-22'，设为前一天 '2026-06-21'
-  const d = new Date(baseISO + 'T00:00:00+08:00');
-  d.setDate(d.getDate() - 1);
-  const prevISO = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
-  setDividendSettledDate(prevISO);
-  console.log(`[分红] 基准日重置为 ${prevISO}（${baseISO} 的前一天）`);
-  return prevISO;
 }
 
 // 工具函数（使用北京时间）
@@ -3083,7 +3063,7 @@ function renderTable() {
   // Header
   const fixedThs = `
     <th class="name-col fixed-th ${sortCls('name')}" onclick="setSort('name')">基金名称</th>
-    <th class="${sortCls('dir')}" style="min-width:220px" onclick="setSort('dir')" title="投资方向+前10大重仓股，点击查看详情">方向与重仓</th>
+    <th class="${sortCls('dir')}" style="min-width:120px;max-width:120px" onclick="setSort('dir')" title="投资方向+前10大重仓股，点击查看详情">方向与重仓</th>
     <th class="${sortCls('ret')}" style="min-width:76px" onclick="setSort('ret')">总收益率</th>
     <th class="model-col ${sortCls('sharpe')}" style="min-width:64px" onclick="setSort('sharpe')" title="(年化收益−Rf)/年化波动率，>1优秀">夏普<div class="model-sub">比率</div></th>
     <th class="model-col ${sortCls('maxdd')}" style="min-width:64px" onclick="setSort('maxdd')" title="区间最大净值回撤，越小越稳">最大<div class="model-sub">回撤</div></th>
@@ -3204,13 +3184,13 @@ function renderTable() {
     let dirHoldingsHtml;
     if (holdingsData && holdingsData.stocks && holdingsData.stocks.length > 0) {
       const totalPct = holdingsData.stocks.reduce((sum, s) => sum + s.pct, 0);
-      // 列出全部重仓股票名称及各自占比，不省略
+      // 列出全部重仓股票名称及各自占比，不省略，超出自动换行
       const stocksListHtml = holdingsData.stocks.map(s =>
         `<span style="white-space:nowrap">${s.name}<span style="color:var(--text);opacity:0.7;font-size:9px;margin-left:1px">${s.pct.toFixed(1)}%</span></span>`
       ).join('、');
-      dirHoldingsHtml = `<div style="cursor:pointer;padding:2px 4px;border-radius:4px" onclick="showHoldingsDialog('${f.code}','${f.name.replace(/'/g,'\\\'')}')" title="点击查看重仓股详情">
+      dirHoldingsHtml = `<div style="cursor:pointer;padding:2px 4px;border-radius:4px;word-break:break-all;line-height:1.5" onclick="showHoldingsDialog('${f.code}','${f.name.replace(/'/g,'\\\'')}')" title="点击查看重仓股详情">
         <span class="tag tag-blue" style="font-size:10px;padding:1px 5px;margin-bottom:2px;display:inline-block">${direction}</span>
-        <div style="font-size:10px;color:var(--muted);line-height:1.5;margin-top:1px">${stocksListHtml}</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:1px">${stocksListHtml}</div>
         <div style="font-size:9px;color:var(--muted);margin-top:1px">合计${totalPct.toFixed(1)}%</div>
       </div>`;
     } else {
@@ -3248,7 +3228,7 @@ function renderTable() {
           <span style="cursor:pointer;color:var(--muted);font-size:12px;opacity:0.6;padding:2px" onclick="removeFund('${f.code}')" title="移至回收站">✕</span>
         </div>
       </td>
-      <td>${dirHoldingsHtml}</td>
+      <td style="max-width:120px;word-break:break-all">${dirHoldingsHtml}</td>
       <td><span class="${retCls}" id="ret_${f.code}" ${navTip}>${retSign}${retVal.toFixed(2)}%</span></td>
       <td>${sharpeHtml}</td>
       <td>${maxddHtml}</td>
@@ -3737,13 +3717,6 @@ async function init() {
     }
     try {
       await fetchAllHistory({ autoFetchToday: false });
-      // 一次性重置：以2026-06-22的持仓为基数重新结算分红
-      // 用 localStorage 标记确保只执行一次
-      if (!localStorage.getItem('fund_dividend_reset_0622')) {
-        const prev = resetDividendDate('2026-06-22'); // 设为6/21，使6/22收益被结算
-        localStorage.setItem('fund_dividend_reset_0622', '1');
-        console.log(`[分红] 已重置基准日为 ${prev}，将从6/22开始重新结算`);
-      }
       settlePendingDividends(); // 历史数据加载完成后结算每日分红
     } catch(e) {
       console.error('[init] fetchAllHistory 出错:', e);
