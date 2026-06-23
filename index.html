@@ -2505,6 +2505,262 @@ async function _fetchHistoryF10(code, startDate, endDate, page) {
   });
 }
 
+// ============================================================
+// 重仓股数据抓取 (FundArchivesDatas.aspx)
+// 接口返回 var apidata={ content:"<html表格>", arryear:[...], curyear:2026 };
+// 通过 script 标签加载，读取 window.apidata 后解析 HTML 表格
+// ============================================================
+const HOLDINGS_CACHE_KEY = 'fund_holdings_cache_v1';
+const HOLDINGS_TTL = 7 * 24 * 60 * 60 * 1000; // 7天缓存
+
+function getHoldingsCache() {
+  try { return JSON.parse(localStorage.getItem(HOLDINGS_CACHE_KEY) || '{}'); }
+  catch(e) { return {}; }
+}
+function setHoldingsCache(c) { localStorage.setItem(HOLDINGS_CACHE_KEY, JSON.stringify(c)); }
+
+// 获取当前季度年份参数 {year, month}
+function _jjccYearMonth() {
+  const now = bjNow();
+  const y = now.getUTCFullYear();
+  const m = now.getUTCMonth() + 1; // 1-12
+  // 季度末月份: 3月→Q1, 6月→Q2, 9月→Q3, 12月→Q4
+  // 如果当前月 <= 3，取去年Q4数据（当年Q1可能还没公布）
+  // 基金季报通常在季度结束15个交易日内公布
+  const quarterEndMonth = m <= 3 ? 12 : m <= 6 ? 3 : m <= 9 ? 6 : 9;
+  const useYear = m <= 3 ? y - 1 : y;
+  return { year: useYear, month: quarterEndMonth };
+}
+
+// 抓取单只基金前10大重仓股
+async function fetchFundHoldings(code) {
+  const { year, month } = _jjccYearMonth();
+  return new Promise((resolve) => {
+    const script = document.createElement('script');
+    script.src = `https://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code=${code}&topline=10&year=${year}&month=${String(month).padStart(2,'0')}`;
+    let done = false;
+    const timeout = setTimeout(() => {
+      if (done) return;
+      done = true;
+      _cleanupHoldingScript(script);
+      resolve(null);
+    }, 10000);
+
+    script.onload = () => {
+      if (done) return;
+      done = true;
+      try {
+        const raw = window.apidata;
+        _cleanupHoldingScript(script);
+        if (!raw || !raw.content) { resolve(null); return; }
+        // 解析 HTML 表格
+        const tmp = document.createElement('div');
+        tmp.innerHTML = raw.content;
+        const rows = tmp.querySelectorAll('tbody tr');
+        const stocks = [];
+        // 提取报告日期
+        let reportDate = '';
+        const dateMatch = raw.content.match(/截止至[：:]?\s*<font[^>]*>(\d{4}-\d{2}-\d{2})<\/font>/);
+        if (dateMatch) reportDate = dateMatch[1];
+
+        rows.forEach(row => {
+          const cells = row.querySelectorAll('td');
+          if (cells.length >= 7) {
+            const stockCode = cells[1]?.textContent.trim() || '';
+            const stockName = cells[2]?.textContent.trim() || '';
+            const pctText = cells[6]?.textContent.trim().replace('%','') || '0';
+            const pct = parseFloat(pctText);
+            if (stockName) stocks.push({ code: stockCode, name: stockName, pct: isNaN(pct) ? 0 : pct });
+          }
+        });
+        resolve({ stocks, reportDate, fetchTime: Date.now() });
+      } catch(e) {
+        console.warn(`[fetchFundHoldings] ${code} 解析失败:`, e);
+        resolve(null);
+      }
+    };
+
+    script.onerror = () => {
+      if (done) return;
+      done = true;
+      _cleanupHoldingScript(script);
+      resolve(null);
+    };
+
+    document.head.appendChild(script);
+  });
+}
+
+function _cleanupHoldingScript(script) {
+  try { document.head.removeChild(script); } catch(e) {}
+  delete window.apidata;
+}
+
+// 批量获取所有基金重仓股（带缓存）
+async function fetchAllHoldings(force = false) {
+  const cache = getHoldingsCache();
+  const now = Date.now();
+  const funds = getActiveFunds();
+  const needFetch = force ? funds : funds.filter(f => {
+    const entry = cache[f.code];
+    return !entry || !entry.fetchTime || (now - entry.fetchTime > HOLDINGS_TTL);
+  });
+
+  if (needFetch.length === 0) {
+    console.log('[fetchAllHoldings] 所有重仓股数据在缓存有效期内，跳过');
+    return;
+  }
+
+  console.log(`[fetchAllHoldings] 需要获取 ${needFetch.length}/${funds.length} 支基金的重仓股`);
+  // 串行获取避免并发过多（每只~7KB）
+  for (const f of needFetch) {
+    try {
+      const data = await fetchFundHoldings(f.code);
+      if (data && data.stocks && data.stocks.length > 0) {
+        cache[f.code] = data;
+        console.log(`[fetchAllHoldings] ${f.code} ${f.name}: ${data.stocks.length} 只重仓股`);
+      } else {
+        console.warn(`[fetchAllHoldings] ${f.code} ${f.name}: 无重仓股数据`);
+      }
+    } catch(e) {
+      console.warn(`[fetchAllHoldings] ${f.code} 获取失败:`, e.message);
+    }
+    await sleep(150); // 间隔150ms
+  }
+  setHoldingsCache(cache);
+  // 抓取后刷新表格（重仓股列）
+  renderTable();
+}
+
+// 获取基金重仓股（优先缓存）
+function getFundHoldings(code) {
+  const cache = getHoldingsCache();
+  return cache[code] || null;
+}
+
+// 推断基金投资方向（基于基金名称关键词）
+function inferFundDirection(fundName, holdings) {
+  const name = fundName || '';
+  // 优先从重仓股推断行业方向
+  const dirMap = {
+    '通信': ['通信', '通讯', '光模块', '光通信'],
+    '电子': ['电子', '消费电子', '面板', '半导体', '芯片', '集成电路', '元器件'],
+    '半导体': ['半导体', '芯片', '集成电路', '晶圆', '封装', '材料设备'],
+    '人工智能': ['人工智能', 'AI', '智能', '算力', '数据中心', '云计算'],
+    '新能源': ['新能源', '光伏', '风电', '储能', '锂电', '新能源车', '碳中和'],
+    '医药': ['医药', '医疗', '生物', '健康', '创新药'],
+    '消费': ['消费', '食品', '白酒', '零售', '品牌'],
+    '金融': ['金融', '银行', '证券', '保险'],
+    '军工': ['军工', '国防', '航天', '航空', '装备'],
+    '科技': ['科技', '创新', '数字经济', '信息', '互联网', '互联'],
+    '高端制造': ['制造', '工业', '机械', '装备', '智造'],
+    '全球/QDII': ['全球', '海外', 'QDII', '美股', '港股', '沪港深'],
+    '环保': ['环保', '低碳', '绿色'],
+    '安全': ['安全', '战略', '国防']
+  };
+
+  // 1. 从基金名称匹配
+  for (const [dir, keywords] of Object.entries(dirMap)) {
+    for (const kw of keywords) {
+      if (name.includes(kw)) return dir;
+    }
+  }
+
+  // 2. 从重仓股名称推断
+  if (holdings && holdings.stocks) {
+    const stockNames = holdings.stocks.map(s => s.name).join('');
+    // 检查常见重仓股行业特征
+    if (/新易盛|中际旭创|光迅|亨通|中天|太辰光|天孚/.test(stockNames)) return '通信';
+    if (/宁德|比亚迪|隆基|阳光|通威|天合|晶澳|派能/.test(stockNames)) return '新能源';
+    if (/中芯|北方华创|韦尔|兆易|长电|通富|华天|紫光/.test(stockNames)) return '半导体';
+    if (/恒瑞|药明|迈瑞|爱尔|通策|百济|信达/.test(stockNames)) return '医药';
+    if (/贵州茅台|五粮液|泸州老窖|伊利|海天|海底捞/.test(stockNames)) return '消费';
+    if (/招商银行|兴业银行|中信证券|东方财富|中国平安/.test(stockNames)) return '金融';
+    if (/中航|航发|航天|洪都|沈飞|成飞/.test(stockNames)) return '军工';
+    if (/科大讯飞|寒武纪|海光|浪潮|紫光|中科曙光/.test(stockNames)) return '人工智能';
+  }
+
+  // 3. 从基金名称的"混合"/"股票"等类型推断
+  if (name.includes('混合')) return '混合';
+  if (name.includes('股票')) return '股票';
+
+  return '综合';
+}
+
+// 显示重仓股详情弹窗
+function showHoldingsDialog(code, fundName) {
+  const data = getFundHoldings(code);
+  if (!data || !data.stocks || data.stocks.length === 0) {
+    toast('暂无重仓股数据，正在加载中...', '');
+    fetchFundHoldings(code).then(d => {
+      if (d && d.stocks && d.stocks.length > 0) {
+        const cache = getHoldingsCache();
+        cache[code] = d;
+        setHoldingsCache(cache);
+        renderTable();
+        showHoldingsDialog(code, fundName);
+      } else {
+        toast('未获取到该基金的重仓股数据', 'err');
+      }
+    });
+    return;
+  }
+
+  const direction = inferFundDirection(fundName, data);
+  const totalPct = data.stocks.reduce((sum, s) => sum + s.pct, 0);
+  const reportDateText = data.reportDate ? `（截止 ${data.reportDate}）` : '';
+
+  const stocksHtml = data.stocks.map((s, i) => {
+    const barWidth = Math.min(100, s.pct * 8); // 占比可视化
+    return `<tr>
+      <td style="text-align:center;color:var(--muted);padding:6px 8px">${i+1}</td>
+      <td style="padding:6px 8px"><span style="font-family:monospace;color:var(--muted);font-size:11px">${s.code}</span></td>
+      <td style="padding:6px 8px;font-weight:500">${s.name}</td>
+      <td style="padding:6px 8px;text-align:right">
+        <div style="display:flex;align-items:center;gap:6px;justify-content:flex-end">
+          <div style="width:60px;height:6px;background:var(--bg);border-radius:3px;overflow:hidden">
+            <div style="width:${barWidth}%;height:100%;background:${s.pct>=8?'var(--red)':s.pct>=5?'var(--blue)':'var(--muted)'}"></div>
+          </div>
+          <span style="color:${s.pct>=8?'var(--red)':'var(--text)'};font-weight:600;min-width:42px;text-align:right">${s.pct.toFixed(2)}%</span>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'holdingsDlgOverlay';
+  overlay.onclick = (e) => { if (e.target === overlay) closeModal('holdingsDlgOverlay'); };
+  overlay.innerHTML = `
+    <div class="modal-box" style="width:520px;max-width:94vw">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+        <h3 class="modal-title" style="margin:0">${fundName}</h3>
+        <span style="cursor:pointer;color:var(--muted);font-size:18px" onclick="closeModal('holdingsDlgOverlay')">✕</span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px">
+        <span class="tag tag-blue" style="font-size:12px">${direction}</span>
+        <span style="font-size:12px;color:var(--muted)">前${data.stocks.length}大重仓股${reportDateText}</span>
+        <span style="font-size:12px;color:var(--muted);margin-left:auto">合计占比 <b style="color:var(--text)">${totalPct.toFixed(2)}%</b></span>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border)">
+            <th style="text-align:center;padding:6px 8px;color:var(--muted);font-weight:400;font-size:11px">#</th>
+            <th style="text-align:left;padding:6px 8px;color:var(--muted);font-weight:400;font-size:11px">代码</th>
+            <th style="text-align:left;padding:6px 8px;color:var(--muted);font-weight:400;font-size:11px">股票名称</th>
+            <th style="text-align:right;padding:6px 8px;color:var(--muted);font-weight:400;font-size:11px">占净值比</th>
+          </tr>
+        </thead>
+        <tbody>${stocksHtml}</tbody>
+      </table>
+      <div style="margin-top:12px;font-size:11px;color:var(--muted);text-align:center">
+        数据来源：天天基金 · 季报披露，仅供参考
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+}
+
 // ---- 实时估算: 并行批量获取 ----
 // fundgz.1234567.com.cn 固定回调名 jsonpgz
 // 通过全局回调 + fundcode 路由实现并行获取（每批6只）
@@ -2587,6 +2843,7 @@ function getSortedFunds() {
       case 'seq': return f.seq;
       case 'name': return f.name;
       case 'code': return f.code;
+      case 'dir': return inferFundDirection(f.name, getFundHoldings(f.code));
       case 'ret': {
         const dynRet = calcRet(f);
         return dynRet !== null ? dynRet : (f.sumR || 0);
@@ -2806,6 +3063,7 @@ function renderTable() {
   // Header
   const fixedThs = `
     <th class="name-col fixed-th ${sortCls('name')}" onclick="setSort('name')">基金名称</th>
+    <th class="${sortCls('dir')}" style="min-width:130px" onclick="setSort('dir')" title="投资方向+前10大重仓股，点击查看详情">方向与重仓</th>
     <th class="${sortCls('ret')}" style="min-width:76px" onclick="setSort('ret')">总收益率</th>
     <th class="model-col ${sortCls('sharpe')}" style="min-width:64px" onclick="setSort('sharpe')" title="(年化收益−Rf)/年化波动率，>1优秀">夏普<div class="model-sub">比率</div></th>
     <th class="model-col ${sortCls('maxdd')}" style="min-width:64px" onclick="setSort('maxdd')" title="区间最大净值回撤，越小越稳">最大<div class="model-sub">回撤</div></th>
@@ -2920,6 +3178,26 @@ function renderTable() {
       ? `<span class="tag ${f.tag==='压舱石'?'tag-blue':f.tag==='波动较大'?'tag-red':'tag-orange'}">${f.tag}</span>`
       : '';
     
+    // 方向与重仓股
+    const holdingsData = getFundHoldings(f.code);
+    const direction = inferFundDirection(f.name, holdingsData);
+    let dirHoldingsHtml;
+    if (holdingsData && holdingsData.stocks && holdingsData.stocks.length > 0) {
+      const topStocks = holdingsData.stocks.slice(0, 5).map(s => s.name).join('、');
+      const moreCount = holdingsData.stocks.length > 5 ? `等${holdingsData.stocks.length}只` : '';
+      const totalPct = holdingsData.stocks.reduce((sum, s) => sum + s.pct, 0);
+      dirHoldingsHtml = `<div style="cursor:pointer;padding:2px 4px;border-radius:4px" onclick="showHoldingsDialog('${f.code}','${f.name.replace(/'/g,'\\\'')}')" title="点击查看前${holdingsData.stocks.length}大重仓股详情">
+        <span class="tag tag-blue" style="font-size:10px;padding:1px 5px;margin-bottom:2px;display:inline-block">${direction}</span>
+        <div style="font-size:10px;color:var(--muted);line-height:1.4;margin-top:1px">${topStocks}${moreCount}</div>
+        <div style="font-size:9px;color:var(--muted);margin-top:1px">合计${totalPct.toFixed(1)}%</div>
+      </div>`;
+    } else {
+      dirHoldingsHtml = `<div style="cursor:pointer;padding:2px 4px" onclick="showHoldingsDialog('${f.code}','${f.name.replace(/'/g,'\\\'')}')" title="点击获取重仓股数据">
+        <span class="tag tag-blue" style="font-size:10px;padding:1px 5px">${direction}</span>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">加载中...</div>
+      </div>`;
+    }
+    
     const dailyCells = displayDates.map(d => {
       const nd = normDate(d);
       const isToday = nd === normDate(today);
@@ -2948,6 +3226,7 @@ function renderTable() {
           <span style="cursor:pointer;color:var(--muted);font-size:12px;opacity:0.6;padding:2px" onclick="removeFund('${f.code}')" title="移至回收站">✕</span>
         </div>
       </td>
+      <td>${dirHoldingsHtml}</td>
       <td><span class="${retCls}" id="ret_${f.code}" ${navTip}>${retSign}${retVal.toFixed(2)}%</span></td>
       <td>${sharpeHtml}</td>
       <td>${maxddHtml}</td>
@@ -2976,7 +3255,7 @@ function renderTable() {
 
 // 排序切换函数
 const SORT_LABELS = {
-  'name': '基金名称', 'code': '代码', 'ret': '总收益率', 'sharpe': '夏普比率',
+  'name': '基金名称', 'code': '代码', 'dir': '方向与重仓', 'ret': '总收益率', 'sharpe': '夏普比率',
   'maxdd': '最大回撤', 'recovery': '修复天数', 'vol': '年化波动率', 'winrate': '胜率',
   'score': '总评分', 'amount': '持仓金额',
   'buy': '收益能力', 'def': '防守能力',
@@ -3446,6 +3725,12 @@ async function init() {
         console.error('[init] fetchTodayData 出错:', e);
       }
     }, 300);
+    // 异步抓取重仓股数据（不阻塞主流程）
+    setTimeout(() => {
+      try { fetchAllHoldings(); } catch(e) {
+        console.error('[init] fetchAllHoldings 出错:', e);
+      }
+    }, 2000);
   }, 500);
 
   // 启动交易时间自动刷新
