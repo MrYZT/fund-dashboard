@@ -177,16 +177,51 @@ th.fixed-th.name-col { z-index: 21; }
 /* 列宽拖拽手柄 */
 .col-resize-handle {
   position: absolute;
-  right: 0;
+  right: -3px;
   top: 0;
-  width: 6px;
+  width: 8px;
   height: 100%;
   cursor: col-resize;
   z-index: 30;
   user-select: none;
+  pointer-events: auto;
 }
-.col-resize-handle:hover, .col-resize-handle.dragging {
+.col-resize-handle::after {
+  content: '';
+  position: absolute;
+  right: 3px;
+  top: 20%;
+  width: 2px;
+  height: 60%;
+  background: transparent;
+  border-radius: 1px;
+  transition: background 0.15s;
+}
+.col-resize-handle:hover::after,
+.col-resize-handle.dragging::after {
   background: var(--blue);
+}
+th.resizable-th.dragging-col {
+  background: #1a2535 !important;
+}
+/* 拖拽提示气泡 */
+.col-resize-tooltip {
+  position: fixed;
+  background: #1a2535;
+  color: var(--blue);
+  font-size: 11px;
+  font-family: monospace;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--blue);
+  z-index: 9999;
+  pointer-events: none;
+  white-space: nowrap;
+}
+/* 拖拽时全局光标 */
+body.col-resizing, body.col-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 th.resizable-th { position: relative; }
 tbody tr { border-bottom: 1px solid rgba(48,54,61,0.5); }
@@ -643,20 +678,37 @@ function startColResize(e, colName) {
   const startW = th.offsetWidth;
   const handle = e.target;
   handle.classList.add('dragging');
+  th.classList.add('dragging-col');
+  document.body.classList.add('col-resizing');
 
-  _colResizeState = { colName, startX, startW, th, handle };
+  // 创建提示气泡
+  const tooltip = document.createElement('div');
+  tooltip.className = 'col-resize-tooltip';
+  tooltip.textContent = `${startW}px`;
+  document.body.appendChild(tooltip);
 
-  document.addEventListener('mousemove', _onColResizeMove);
-  document.addEventListener('mouseup', _onColResizeEnd);
+  _colResizeState = { colName, startX, startW, th, handle, tooltip };
+
+  // 同时支持触摸
+  if (e.touches) {
+    document.addEventListener('touchmove', _onColResizeMove, { passive: false });
+    document.addEventListener('touchend', _onColResizeEnd);
+  } else {
+    document.addEventListener('mousemove', _onColResizeMove);
+    document.addEventListener('mouseup', _onColResizeEnd);
+  }
 }
 
 function _onColResizeMove(e) {
   if (!_colResizeState) return;
-  const { colName, startX, startW, th } = _colResizeState;
-  const diff = e.clientX - startX;
-  let newW = Math.max(60, startW + diff); // 最小60px
+  e.preventDefault?.();
+  const { colName, startX, startW, th, tooltip } = _colResizeState;
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  const diff = clientX - startX;
+  let newW = Math.max(60, Math.round(startW + diff));
   th.style.width = newW + 'px';
   th.style.minWidth = newW + 'px';
+  th.style.maxWidth = newW + 'px';
   // 同步td
   const cellIdx = colName === 'name' ? 0 : 1;
   document.querySelectorAll('#fundTable tbody tr').forEach(tr => {
@@ -664,20 +716,32 @@ function _onColResizeMove(e) {
     if (td) {
       td.style.width = newW + 'px';
       td.style.minWidth = newW + 'px';
+      td.style.maxWidth = newW + 'px';
     }
   });
+  // 更新提示气泡位置
+  if (tooltip) {
+    tooltip.textContent = `${newW}px`;
+    tooltip.style.left = (clientX + 12) + 'px';
+    tooltip.style.top = (th.getBoundingClientRect().top - 24) + 'px';
+  }
 }
 
 function _onColResizeEnd() {
   if (!_colResizeState) return;
-  const { colName, th, handle } = _colResizeState;
+  const { colName, th, handle, tooltip } = _colResizeState;
   handle.classList.remove('dragging');
+  th.classList.remove('dragging-col');
+  document.body.classList.remove('col-resizing');
+  if (tooltip) tooltip.remove();
   const finalW = th.offsetWidth;
   const widths = getColWidths();
   widths[colName] = finalW;
   setColWidths(widths);
   document.removeEventListener('mousemove', _onColResizeMove);
   document.removeEventListener('mouseup', _onColResizeEnd);
+  document.removeEventListener('touchmove', _onColResizeMove);
+  document.removeEventListener('touchend', _onColResizeEnd);
   _colResizeState = null;
   autoCloudPush();
 }
@@ -3154,8 +3218,8 @@ function renderTable() {
   const nameW = colW.name ? `width:${colW.name}px;min-width:${colW.name}px` : '';
   const dirW = colW.dir ? `width:${colW.dir}px;min-width:${colW.dir}px` : 'min-width:120px';
   const fixedThs = `
-    <th class="name-col fixed-th resizable-th ${sortCls('name')}" style="${nameW}" onclick="setSort('name')"><div style="position:relative">基金名称<span class="col-resize-handle" data-col="name" onmousedown="startColResize(event,'name')"></span></div></th>
-    <th class="resizable-th ${sortCls('dir')}" style="${dirW}" onclick="setSort('dir')" title="投资方向+前10大重仓股，点击查看详情"><div style="position:relative">方向与重仓<span class="col-resize-handle" data-col="dir" onmousedown="startColResize(event,'dir')"></span></div></th>
+    <th class="name-col fixed-th resizable-th ${sortCls('name')}" style="${nameW}" onclick="setSort('name')"><div style="position:relative">基金名称<span class="col-resize-handle" data-col="name" onmousedown="startColResize(event,'name')" ontouchstart="startColResize(event,'name')"></span></div></th>
+    <th class="resizable-th ${sortCls('dir')}" style="${dirW}" onclick="setSort('dir')" title="投资方向+前10大重仓股，点击查看详情"><div style="position:relative">方向与重仓<span class="col-resize-handle" data-col="dir" onmousedown="startColResize(event,'dir')" ontouchstart="startColResize(event,'dir')"></span></div></th>
     <th class="${sortCls('ret')}" style="min-width:76px" onclick="setSort('ret')">总收益率</th>
     <th class="model-col ${sortCls('sharpe')}" style="min-width:64px" onclick="setSort('sharpe')" title="(年化收益−Rf)/年化波动率，>1优秀">夏普<div class="model-sub">比率</div></th>
     <th class="model-col ${sortCls('maxdd')}" style="min-width:64px" onclick="setSort('maxdd')" title="区间最大净值回撤，越小越稳">最大<div class="model-sub">回撤</div></th>
@@ -3311,7 +3375,7 @@ function renderTable() {
     }).join('');
     
     return `<tr>
-      <td class="name-col" style="${colW.name?`width:${colW.name}px;min-width:${colW.name}px`:''}">
+      <td class="name-col" style="${colW.name?`width:${colW.name}px;min-width:${colW.name}px;max-width:${colW.name}px`:''}">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:4px">
           <div>
             <div class="fname">${f.name}${tagHtml}</div>
@@ -3320,7 +3384,7 @@ function renderTable() {
           <span style="cursor:pointer;color:var(--muted);font-size:12px;opacity:0.6;padding:2px" onclick="removeFund('${f.code}')" title="移至回收站">✕</span>
         </div>
       </td>
-      <td style="${colW.dir?`width:${colW.dir}px;min-width:${colW.dir}px`:'min-width:120px'};word-break:break-all">${dirHoldingsHtml}</td>
+      <td style="${colW.dir?`width:${colW.dir}px;min-width:${colW.dir}px;max-width:${colW.dir}px`:'min-width:120px'};word-break:break-all;overflow:hidden">${dirHoldingsHtml}</td>
       <td><span class="${retCls}" id="ret_${f.code}" ${navTip}>${retSign}${retVal.toFixed(2)}%</span></td>
       <td>${sharpeHtml}</td>
       <td>${maxddHtml}</td>
