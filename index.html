@@ -157,7 +157,7 @@ thead th {
 }
 th.name-col {
   text-align: left;
-  min-width: 200px;
+  min-width: 120px;
   position: sticky;
   left: 0;
   z-index: 20;
@@ -2604,6 +2604,11 @@ function getSortedFunds() {
       case 'avg': return calcAvgDailyReturn(f) ?? null;
       case 'upDays': return calcUpDownDays(f).up;
       case 'dnDays': return calcUpDownDays(f).dn;
+      case 'todayGain': {
+        const amt = getFundAmount(f.code, currentAccountId);
+        const tv = cache[cacheKey(f.code, bjTodayKey())];
+        return (amt > 0 && tv != null) ? amt * tv / 100 : null;
+      }
       default: {
         const v = cache[cacheKey(f.code, sortCol)];
         return v ?? null;
@@ -2801,7 +2806,6 @@ function renderTable() {
   // Header
   const fixedThs = `
     <th class="name-col fixed-th ${sortCls('name')}" onclick="setSort('name')">基金名称</th>
-    <th class="${sortCls('code')}" style="min-width:64px" onclick="setSort('code')">代码</th>
     <th class="${sortCls('ret')}" style="min-width:76px" onclick="setSort('ret')">总收益率</th>
     <th class="model-col ${sortCls('sharpe')}" style="min-width:64px" onclick="setSort('sharpe')" title="(年化收益−Rf)/年化波动率，>1优秀">夏普<div class="model-sub">比率</div></th>
     <th class="model-col ${sortCls('maxdd')}" style="min-width:64px" onclick="setSort('maxdd')" title="区间最大净值回撤，越小越稳">最大<div class="model-sub">回撤</div></th>
@@ -2816,6 +2820,7 @@ function renderTable() {
     <th class="${sortCls('avg')}" style="min-width:66px" onclick="setSort('avg')">平均日收益</th>
     <th class="${sortCls('upDays')}" style="min-width:62px" onclick="setSort('upDays')">盈利<span style="color:var(--red);font-size:10px">天数</span></th>
     <th class="${sortCls('dnDays')}" style="min-width:62px" onclick="setSort('dnDays')">亏损<span style="color:var(--green);font-size:10px">天数</span></th>
+    <th class="${sortCls('todayGain')}" style="min-width:72px" onclick="setSort('todayGain')" title="当前持仓金额×今日涨跌幅/100，需已设置持仓金额">今日<span style="font-size:10px;color:var(--muted)">收益</span></th>
   `;
   const dateThs = displayDates.map(d => {
     const nd = normDate(d);
@@ -2884,6 +2889,20 @@ function renderTable() {
     const upHtml = `<span style="color:var(--red);font-weight:600">${ud.up}</span>`;
     const dnHtml = `<span style="color:var(--green);font-weight:600">${ud.dn}</span>`;
     
+    // 今日收益（持仓金额 × 今日涨跌幅 / 100）
+    const todayVal = cache[cacheKey(f.code, today)];
+    const todayAmt = getFundAmount(f.code, currentAccountId);
+    let todayGainHtml;
+    if (todayAmt > 0 && todayVal != null) {
+      const gain = todayAmt * todayVal / 100;
+      const gainSign = gain >= 0 ? '+' : '';
+      todayGainHtml = `<span style="color:${gain>=0?'var(--red)':'var(--green)'};font-weight:600">${gainSign}${gain.toFixed(1)}</span>`;
+    } else if (todayAmt <= 0) {
+      todayGainHtml = '<span style="color:var(--muted);font-size:11px">未持仓</span>';
+    } else {
+      todayGainHtml = '<span style="color:var(--muted)">—</span>';
+    }
+    
     const buyHtml = f.buy != null
       ? `<div class="bar-wrap"><div class="bar"><div class="bar-fill" style="width:${f.buy}%;background:${f.buy>85?'var(--red)':'var(--blue)'}"></div></div><span class="bar-num">${f.buy}</span></div>`
       : '<span style="color:var(--muted)">—</span>';
@@ -2929,7 +2948,6 @@ function renderTable() {
           <span style="cursor:pointer;color:var(--muted);font-size:12px;opacity:0.6;padding:2px" onclick="removeFund('${f.code}')" title="移至回收站">✕</span>
         </div>
       </td>
-      <td>${f.code}</td>
       <td><span class="${retCls}" id="ret_${f.code}" ${navTip}>${retSign}${retVal.toFixed(2)}%</span></td>
       <td>${sharpeHtml}</td>
       <td>${maxddHtml}</td>
@@ -2944,6 +2962,7 @@ function renderTable() {
       <td>${avgHtml}</td>
       <td>${upHtml}</td>
       <td>${dnHtml}</td>
+      <td>${todayGainHtml}</td>
       ${dailyCells}
     </tr>`;
   }).join('');
@@ -2961,7 +2980,7 @@ const SORT_LABELS = {
   'maxdd': '最大回撤', 'recovery': '修复天数', 'vol': '年化波动率', 'winrate': '胜率',
   'score': '总评分', 'amount': '持仓金额',
   'buy': '收益能力', 'def': '防守能力',
-  'avg': '平均日收益', 'upDays': '盈利天数', 'dnDays': '亏损天数', 'seq': '默认'
+  'avg': '平均日收益', 'upDays': '盈利天数', 'dnDays': '亏损天数', 'todayGain': '今日收益', 'seq': '默认'
 };
 
 function setSort(col) {
