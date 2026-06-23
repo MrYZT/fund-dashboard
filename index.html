@@ -3191,11 +3191,11 @@ function renderTable() {
       const totalPct = sortedStocks.reduce((sum, s) => sum + s.pct, 0);
       // 列出全部重仓股票名称及各自占比，不省略，超出自动换行
       const stocksListHtml = sortedStocks.map(s =>
-        `<span style="white-space:nowrap">${s.name}<span style="color:var(--text);opacity:0.7;font-size:9px;margin-left:1px">${s.pct.toFixed(1)}%</span></span>`
+        `<span style="display:inline">${s.name}<span style="color:var(--text);opacity:0.7;font-size:9px;margin-left:1px">${s.pct.toFixed(1)}%</span></span>`
       ).join('、');
-      dirHoldingsHtml = `<div style="cursor:pointer;padding:2px 4px;border-radius:4px;word-break:break-all;line-height:1.5" onclick="showHoldingsDialog('${f.code}','${f.name.replace(/'/g,'\\\'')}')" title="点击查看重仓股详情">
+      dirHoldingsHtml = `<div style="cursor:pointer;padding:2px 4px;border-radius:4px;line-height:1.6;word-wrap:break-word;overflow-wrap:break-word" onclick="showHoldingsDialog('${f.code}','${f.name.replace(/'/g,'\\\'')}')" title="点击查看重仓股详情">
         <span class="tag tag-blue" style="font-size:10px;padding:1px 5px;margin-bottom:2px;display:inline-block">${direction}</span>
-        <div style="font-size:10px;color:var(--muted);margin-top:1px">${stocksListHtml}</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:1px;word-wrap:break-word;overflow-wrap:break-word">${stocksListHtml}</div>
         <div style="font-size:9px;color:var(--muted);margin-top:1px">合计${totalPct.toFixed(1)}%</div>
       </div>`;
     } else {
@@ -3224,16 +3224,16 @@ function renderTable() {
     }).join('');
     
     return `<tr>
-      <td class="name-col" style="width:180px;min-width:180px;max-width:180px;word-break:break-all">
+      <td class="name-col" style="width:180px;min-width:180px;max-width:180px">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:4px">
-          <div>
+          <div style="min-width:0;overflow:hidden;word-break:break-word">
             <div class="fname">${f.name}${tagHtml}</div>
             <div class="fcode">${f.code}</div>
           </div>
-          <span style="cursor:pointer;color:var(--muted);font-size:12px;opacity:0.6;padding:2px" onclick="removeFund('${f.code}')" title="移至回收站">✕</span>
+          <span style="cursor:pointer;color:var(--muted);font-size:12px;opacity:0.6;padding:2px;flex-shrink:0" onclick="removeFund('${f.code}')" title="移至回收站">✕</span>
         </div>
       </td>
-      <td style="width:600px;min-width:600px;max-width:600px;word-break:break-all;overflow:hidden">${dirHoldingsHtml}</td>
+      <td style="width:600px;min-width:600px;max-width:600px;overflow:hidden;word-wrap:break-word;overflow-wrap:break-word">${dirHoldingsHtml}</td>
       <td><span class="${retCls}" id="ret_${f.code}" ${navTip}>${retSign}${retVal.toFixed(2)}%</span></td>
       <td>${sharpeHtml}</td>
       <td>${maxddHtml}</td>
