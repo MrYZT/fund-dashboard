@@ -174,6 +174,21 @@ th.fixed-th { position: sticky; z-index: 11; background: #1c2128; }
 th.fixed-th.name-col { z-index: 21; }
 .sort-reset { cursor: pointer; font-size: 11px; color: var(--muted); margin-left: 8px; }
 .sort-reset:hover { color: var(--text); }
+/* 列宽拖拽手柄 */
+.col-resize-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 30;
+  user-select: none;
+}
+.col-resize-handle:hover, .col-resize-handle.dragging {
+  background: var(--blue);
+}
+th.resizable-th { position: relative; }
 tbody tr { border-bottom: 1px solid rgba(48,54,61,0.5); }
 tbody tr:hover { background: var(--hover); }
 tbody tr:last-child { border-bottom: none; }
@@ -600,6 +615,74 @@ function rebuildDates() {
 }
 
 // ============================================================
+// 可拖拽列宽（第一列基金名称 + 第二列方向与重仓）
+// localStorage: 'fund_col_widths' → {name: 120, dir: 120}
+// 纳入云同步，跨设备保持一致
+// ============================================================
+const COL_WIDTHS_KEY = 'fund_col_widths';
+const COL_WIDTH_DEFAULTS = { name: 120, dir: 120 };
+
+function getColWidths() {
+  try {
+    const v = localStorage.getItem(COL_WIDTHS_KEY);
+    if (v) return Object.assign({}, COL_WIDTH_DEFAULTS, JSON.parse(v));
+  } catch {}
+  return { ...COL_WIDTH_DEFAULTS };
+}
+function setColWidths(w) {
+  localStorage.setItem(COL_WIDTHS_KEY, JSON.stringify(w));
+}
+
+let _colResizeState = null;
+function startColResize(e, colName) {
+  e.preventDefault();
+  e.stopPropagation();
+  const th = e.target.closest('th');
+  if (!th) return;
+  const startX = e.clientX;
+  const startW = th.offsetWidth;
+  const handle = e.target;
+  handle.classList.add('dragging');
+
+  _colResizeState = { colName, startX, startW, th, handle };
+
+  document.addEventListener('mousemove', _onColResizeMove);
+  document.addEventListener('mouseup', _onColResizeEnd);
+}
+
+function _onColResizeMove(e) {
+  if (!_colResizeState) return;
+  const { colName, startX, startW, th } = _colResizeState;
+  const diff = e.clientX - startX;
+  let newW = Math.max(60, startW + diff); // 最小60px
+  th.style.width = newW + 'px';
+  th.style.minWidth = newW + 'px';
+  // 同步td
+  const cellIdx = colName === 'name' ? 0 : 1;
+  document.querySelectorAll('#fundTable tbody tr').forEach(tr => {
+    const td = tr.children[cellIdx];
+    if (td) {
+      td.style.width = newW + 'px';
+      td.style.minWidth = newW + 'px';
+    }
+  });
+}
+
+function _onColResizeEnd() {
+  if (!_colResizeState) return;
+  const { colName, th, handle } = _colResizeState;
+  handle.classList.remove('dragging');
+  const finalW = th.offsetWidth;
+  const widths = getColWidths();
+  widths[colName] = finalW;
+  setColWidths(widths);
+  document.removeEventListener('mousemove', _onColResizeMove);
+  document.removeEventListener('mouseup', _onColResizeEnd);
+  _colResizeState = null;
+  autoCloudPush();
+}
+
+// ============================================================
 // 多账户管理系统（最多5个账户）
 // 存储格式 localStorage:
 //   'fund_accounts' → [{id, name}]
@@ -608,6 +691,7 @@ function rebuildDates() {
 const MAX_ACCOUNTS = 5;
 const ACCOUNTS_KEY = 'fund_accounts';
 const DEFAULT_ACCOUNT = { id: 'all', name: '全部账户' }; // 虚拟"全部"账户，不可删
+
 
 let currentAccountId = localStorage.getItem('current_account') || 'all'; // 当前选中账户
 
@@ -1301,6 +1385,7 @@ function exportPositionsData() {
     statStartDate: STAT_START_ISO,
     customFunds: JSON.parse(localStorage.getItem(CUSTOM_FUND_KEY) || '[]'),
     dividendSettledDate: getDividendSettledDate(),
+    colWidths: getColWidths(),
     positions: {}
   };
   // 收集所有账户下所有基金的持仓金额
@@ -1342,6 +1427,10 @@ function importPositionsData(data) {
   // 导入分红结算日期（防止跨设备重复结算）
   if (data.dividendSettledDate) {
     setDividendSettledDate(data.dividendSettledDate);
+  }
+  // 导入列宽设置
+  if (data.colWidths) {
+    setColWidths(data.colWidths);
   }
   // 导入持仓金额
   if (data.positions) {
@@ -3061,9 +3150,12 @@ function renderTable() {
   }
   
   // Header
+  const colW = getColWidths();
+  const nameW = colW.name ? `width:${colW.name}px;min-width:${colW.name}px` : '';
+  const dirW = colW.dir ? `width:${colW.dir}px;min-width:${colW.dir}px` : 'min-width:120px';
   const fixedThs = `
-    <th class="name-col fixed-th ${sortCls('name')}" onclick="setSort('name')">基金名称</th>
-    <th class="${sortCls('dir')}" style="min-width:120px;max-width:120px" onclick="setSort('dir')" title="投资方向+前10大重仓股，点击查看详情">方向与重仓</th>
+    <th class="name-col fixed-th resizable-th ${sortCls('name')}" style="${nameW}" onclick="setSort('name')"><div style="position:relative">基金名称<span class="col-resize-handle" data-col="name" onmousedown="startColResize(event,'name')"></span></div></th>
+    <th class="resizable-th ${sortCls('dir')}" style="${dirW}" onclick="setSort('dir')" title="投资方向+前10大重仓股，点击查看详情"><div style="position:relative">方向与重仓<span class="col-resize-handle" data-col="dir" onmousedown="startColResize(event,'dir')"></span></div></th>
     <th class="${sortCls('ret')}" style="min-width:76px" onclick="setSort('ret')">总收益率</th>
     <th class="model-col ${sortCls('sharpe')}" style="min-width:64px" onclick="setSort('sharpe')" title="(年化收益−Rf)/年化波动率，>1优秀">夏普<div class="model-sub">比率</div></th>
     <th class="model-col ${sortCls('maxdd')}" style="min-width:64px" onclick="setSort('maxdd')" title="区间最大净值回撤，越小越稳">最大<div class="model-sub">回撤</div></th>
@@ -3219,7 +3311,7 @@ function renderTable() {
     }).join('');
     
     return `<tr>
-      <td class="name-col">
+      <td class="name-col" style="${colW.name?`width:${colW.name}px;min-width:${colW.name}px`:''}">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:4px">
           <div>
             <div class="fname">${f.name}${tagHtml}</div>
@@ -3228,7 +3320,7 @@ function renderTable() {
           <span style="cursor:pointer;color:var(--muted);font-size:12px;opacity:0.6;padding:2px" onclick="removeFund('${f.code}')" title="移至回收站">✕</span>
         </div>
       </td>
-      <td style="max-width:120px;word-break:break-all">${dirHoldingsHtml}</td>
+      <td style="${colW.dir?`width:${colW.dir}px;min-width:${colW.dir}px`:'min-width:120px'};word-break:break-all">${dirHoldingsHtml}</td>
       <td><span class="${retCls}" id="ret_${f.code}" ${navTip}>${retSign}${retVal.toFixed(2)}%</span></td>
       <td>${sharpeHtml}</td>
       <td>${maxddHtml}</td>
