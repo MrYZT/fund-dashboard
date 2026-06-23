@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-06-23 11:25:20",
+  "updatedAt": "2026-06-23 11:25:26",
   "accounts": [
     {
       "id": "acc_1781750628824",
@@ -61,7 +61,7 @@
   "dividendSettledDate": "2026-06-22",
   "colWidths": {
     "name": 317,
-    "dir": 120
+    "dir": 1389
   },
   "positions": {
     "acc_1781750628824_006533": 307.23712,
