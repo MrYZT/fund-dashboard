@@ -642,6 +642,87 @@ function saveAccAmount(accId, code, delta) {
   else localStorage.setItem(accAmountKey(accId, code), String(newVal));
 }
 
+// ============================================================
+// 基金标记系统（优先考虑/考察观望/放弃/自定义）
+// localStorage: 'fund_marks' → { "006533": "优先考虑", ... }
+// ============================================================
+const FUND_MARKS_KEY = 'fund_marks';
+const MARK_PRESETS = ['优先考虑', '考察观望', '放弃'];
+
+function getFundMarks() {
+  try { return JSON.parse(localStorage.getItem(FUND_MARKS_KEY) || '{}'); } catch { return {}; }
+}
+function getFundMark(code) {
+  return getFundMarks()[code] || '';
+}
+function setFundMark(code, text) {
+  const marks = getFundMarks();
+  if (text && text.trim()) marks[code] = text.trim();
+  else delete marks[code];
+  localStorage.setItem(FUND_MARKS_KEY, JSON.stringify(marks));
+}
+
+function markColor(text) {
+  if (text === '优先考虑') return 'var(--red)';
+  if (text === '考察观望') return 'var(--orange)';
+  if (text === '放弃') return 'var(--muted)';
+  return 'var(--blue)';
+}
+function markBg(text) {
+  if (text === '优先考虑') return 'var(--red-bg)';
+  if (text === '考察观望') return 'rgba(240,136,62,0.12)';
+  if (text === '放弃') return 'rgba(139,148,158,0.12)';
+  return 'rgba(88,166,255,0.12)';
+}
+
+function showMarkDialog(code, fundName) {
+  const current = getFundMark(code);
+  const presetBtns = MARK_PRESETS.map(p => {
+    const active = current === p ? 'mark-active' : '';
+    return `<button class="btn mark-btn ${active}" style="border-color:${current===p?markColor(p):'var(--border)'};color:${markColor(p)}" onclick="doSetMark('${code}','${p}')">${p}</button>`;
+  }).join('');
+
+  const html = `
+    <div class="modal-overlay" id="markDlgOverlay" onclick="if(event.target===this)closeModal('markDlgOverlay')">
+      <div class="modal-box" style="width:380px">
+        <div class="modal-title">🏷️ 标记 — ${fundName.length > 14 ? fundName.substring(0,14)+'…' : fundName}</div>
+        <div style="margin-bottom:10px;font-size:11px;color:var(--muted)">选择标记或自定义输入</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">${presetBtns}</div>
+        <div style="margin-bottom:8px;font-size:11px;color:var(--muted)">自定义：</div>
+        <input type="text" id="markCustomInput" class="acc-amount-input" style="width:100%;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px" placeholder="输入自定义标记文本" value="${current && !MARK_PRESETS.includes(current) ? current.replace(/"/g,'&quot;') : ''}">
+        <div class="modal-footer">
+          ${current ? `<button class="btn" style="margin-right:auto;color:var(--red)" onclick="doSetMark('${code}','')">清除标记</button>` : ''}
+          <button class="btn" onclick="closeModal('markDlgOverlay')">取消</button>
+          <button class="btn primary" onclick="doSetMarkCustom('${code}')">确认</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+  // 回车确认
+  const input = document.getElementById('markCustomInput');
+  if (input) input.addEventListener('keydown', e => { if (e.key === 'Enter') doSetMarkCustom(code); });
+}
+
+function doSetMark(code, text) {
+  setFundMark(code, text);
+  closeModal('markDlgOverlay');
+  renderTable();
+  renderCards();
+  toast(text ? `已标记为「${text}」` : '已清除标记', 'ok');
+  autoCloudPush();
+}
+
+function doSetMarkCustom(code) {
+  const input = document.getElementById('markCustomInput');
+  const text = input ? input.value.trim() : '';
+  setFundMark(code, text);
+  closeModal('markDlgOverlay');
+  renderTable();
+  renderCards();
+  toast(text ? `已标记为「${text}」` : '已清除标记', 'ok');
+  autoCloudPush();
+}
+
 // 获取某基金在指定账户下的持仓（accId='all' 返回所有账户之和）
 function getFundAmount(code, accId) {
   if (accId === 'all' || !accId) {
@@ -1312,6 +1393,7 @@ function exportPositionsData() {
     statStartDate: STAT_START_ISO,
     customFunds: JSON.parse(localStorage.getItem(CUSTOM_FUND_KEY) || '[]'),
     dividendSettledDate: getDividendSettledDate(),
+    fundMarks: getFundMarks(),
     positions: {}
   };
   // 收集所有账户下所有基金的持仓金额
@@ -1353,6 +1435,10 @@ function importPositionsData(data) {
   // 导入分红结算日期（防止跨设备重复结算）
   if (data.dividendSettledDate) {
     setDividendSettledDate(data.dividendSettledDate);
+  }
+  // 导入基金标记
+  if (data.fundMarks && typeof data.fundMarks === 'object') {
+    localStorage.setItem(FUND_MARKS_KEY, JSON.stringify(data.fundMarks));
   }
   // 导入持仓金额
   if (data.positions) {
@@ -2855,6 +2941,7 @@ function getSortedFunds() {
     switch (sortCol) {
       case 'seq': return f.seq;
       case 'name': return f.name;
+      case 'mark': return getFundMark(f.code) || '';
       case 'code': return f.code;
       case 'dir': return inferFundDirection(f.name, getFundHoldings(f.code));
       case 'ret': {
@@ -3076,6 +3163,7 @@ function renderTable() {
   // Header
   const fixedThs = `
     <th class="name-col fixed-th ${sortCls('name')}" style="width:180px;min-width:180px;max-width:180px;white-space:normal;word-break:break-word;overflow-wrap:break-word" onclick="setSort('name')">基金名称</th>
+    <th class="${sortCls('mark')}" style="min-width:70px" onclick="setSort('mark')" title="点击设置标记">标记</th>
     <th class="${sortCls('dir')}" style="width:400px;min-width:400px;max-width:400px;white-space:normal;word-break:break-word;overflow-wrap:break-word" onclick="setSort('dir')" title="投资方向+前10大重仓股，点击查看详情">方向与重仓</th>
     <th class="${sortCls('ret')}" style="min-width:76px" onclick="setSort('ret')">总收益率</th>
     <th class="model-col ${sortCls('sharpe')}" style="min-width:64px" onclick="setSort('sharpe')" title="(年化收益−Rf)/年化波动率，>1优秀">夏普<div class="model-sub">比率</div></th>
@@ -3243,6 +3331,7 @@ function renderTable() {
           <span style="cursor:pointer;color:var(--muted);font-size:12px;opacity:0.6;padding:2px;flex-shrink:0" onclick="removeFund('${f.code}')" title="移至回收站">✕</span>
         </div>
       </td>
+      <td style="text-align:center"><span class="mark-cell" style="cursor:pointer;display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;white-space:nowrap;${(() => { const mk = getFundMark(f.code); return mk ? `background:${markBg(mk)};color:${markColor(mk)};font-weight:600` : 'color:var(--muted);opacity:0.5' })()}" onclick="showMarkDialog('${f.code}','${f.name.replace(/'/g,'\\\'')}')" title="点击设置标记">${getFundMark(f.code) || '＋'}</span></td>
       <td style="width:400px;min-width:400px;max-width:400px;overflow:hidden;white-space:normal;word-break:break-word;overflow-wrap:break-word">${dirHoldingsHtml}</td>
       <td><span class="${retCls}" id="ret_${f.code}" ${navTip}>${retSign}${retVal.toFixed(2)}%</span></td>
       <td>${sharpeHtml}</td>
@@ -3272,7 +3361,7 @@ function renderTable() {
 
 // 排序切换函数
 const SORT_LABELS = {
-  'name': '基金名称', 'code': '代码', 'dir': '方向与重仓', 'ret': '总收益率', 'sharpe': '夏普比率',
+  'name': '基金名称', 'mark': '标记', 'code': '代码', 'dir': '方向与重仓', 'ret': '总收益率', 'sharpe': '夏普比率',
   'maxdd': '最大回撤', 'recovery': '修复天数', 'vol': '年化波动率', 'winrate': '胜率',
   'score': '总评分', 'amount': '持仓金额',
   'buy': '收益能力', 'def': '防守能力',
