@@ -908,8 +908,8 @@ function closeModal(id) {
 
 // ============================================================
 // 历史收益查看功能
-// 按各账户当前持仓金额，计算每个账户及全部账户的每日收益率
-// 假设：当前持仓金额在过去每个交易日都持有相同金额（简化模型）
+// 优先使用分红结算时锁定的每日收益快照（历史收益固定，不受后续增减仓影响）
+// 无快照的日期（当天未结算/今天）回退到当前持仓金额回算
 // ============================================================
 function showHistoryReturns() {
   const accs = getAccounts();
@@ -929,13 +929,26 @@ function showHistoryReturns() {
   dates.sort((a,b) => parseMD(b) - parseMD(a));
 
   // 计算每个日期的各账户收益率
+  const snapshot = getGainSnapshot();
   const rows = dates.map(d => {
+    const dateISO = mdToISO(d);
+    const daySnap = snapshot[dateISO] || null; // 当日快照（分红结算时锁定）
     const row = { date: d, accs: {}, allReturn: null, allGain: 0, allAmount: 0 };
     let totalGain = 0, totalAmount = 0;
 
     accs.forEach(acc => {
       let accGain = 0, accAmount = 0, accWithData = 0;
+      const accSnap = daySnap && daySnap[acc.id] ? daySnap[acc.id] : null;
       FUNDS.forEach(f => {
+        // 优先使用快照（历史收益已锁定，不受后续增减仓影响）
+        if (accSnap && accSnap[f.code]) {
+          const s = accSnap[f.code];
+          accAmount += s.amt;
+          accGain += s.gain;
+          accWithData++;
+          return;
+        }
+        // 无快照：用当前持仓金额回算（当天未结算或今天）
         const amt = loadAccAmount(acc.id, f.code);
         if (amt <= 0) return;
         const v = cache[cacheKey(f.code, d)];
@@ -1394,6 +1407,7 @@ function exportPositionsData() {
     customFunds: JSON.parse(localStorage.getItem(CUSTOM_FUND_KEY) || '[]'),
     dividendSettledDate: getDividendSettledDate(),
     fundMarks: getFundMarks(),
+    gainSnapshot: getGainSnapshot(),
     positions: {}
   };
   // 收集所有账户下所有基金的持仓金额
@@ -1439,6 +1453,10 @@ function importPositionsData(data) {
   // 导入基金标记
   if (data.fundMarks && typeof data.fundMarks === 'object') {
     localStorage.setItem(FUND_MARKS_KEY, JSON.stringify(data.fundMarks));
+  }
+  // 导入历史收益快照（锁定历史收益，跨设备一致）
+  if (data.gainSnapshot && typeof data.gainSnapshot === 'object') {
+    setGainSnapshot(data.gainSnapshot);
   }
   // 导入持仓金额
   if (data.positions) {
@@ -1652,10 +1670,33 @@ function setDividendSettledDate(iso) {
   localStorage.setItem(DIVIDEND_KEY, iso);
 }
 
+// ============================================================
+// 历史收益快照：分红结算时锁定每日收益(元)，后续增减仓不改变历史
+// localStorage: 'fund_gain_snapshot' → { "2026-06-01": { "acc1": { "006533": {amt:1000, gain:12.5} } } }
+// ============================================================
+const GAIN_SNAPSHOT_KEY = 'fund_gain_snapshot';
+
+function getGainSnapshot() {
+  try { return JSON.parse(localStorage.getItem(GAIN_SNAPSHOT_KEY) || '{}'); }
+  catch { return {}; }
+}
+function setGainSnapshot(snap) {
+  localStorage.setItem(GAIN_SNAPSHOT_KEY, JSON.stringify(snap));
+}
+// 记录某日某账户某基金的收益快照（分红结算时调用）
+function recordGainSnapshot(dateISO, accId, code, amount, gain) {
+  const snap = getGainSnapshot();
+  if (!snap[dateISO]) snap[dateISO] = {};
+  if (!snap[dateISO][accId]) snap[dateISO][accId] = {};
+  snap[dateISO][accId][code] = { amt: Math.round(amount * 100) / 100, gain: Math.round(gain * 100) / 100 };
+  setGainSnapshot(snap);
+}
+
 // 结算单个交易日的分红：各账户各基金 持仓×涨跌幅 滚入持仓
 function settleDividendForDate(md) {
   const cache = getCache();
   const accs = getAccounts();
+  const dateISO = mdToISO(md);
   let dayDividend = 0;
   let fundCount = 0;
 
@@ -1667,6 +1708,8 @@ function settleDividendForDate(md) {
       if (changePct === undefined || changePct === null || isNaN(changePct)) return;
       // 收益 = 持仓 × (涨跌幅/100)
       const dividend = amount * (changePct / 100);
+      // 记录当日收益快照（锁定历史收益，后续增减仓不改变）
+      recordGainSnapshot(dateISO, acc.id, f.code, amount, dividend);
       if (Math.abs(dividend) < 0.005) return; // 忽略极小变动
       saveAccAmount(acc.id, f.code, dividend);
       dayDividend += dividend;
