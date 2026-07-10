@@ -2778,6 +2778,219 @@ function getFundHoldings(code) {
   return cache[code] || null;
 }
 
+// ==================== 主力资金动向（重仓股主力净流入合计） ====================
+const MFLOW_CACHE_KEY = 'fund_moneyflow_cache_v1';
+const MFLOW_TTL = 5 * 60 * 1000; // 5分钟缓存（盘中实时变化）
+
+function getMFlowCache() {
+  try { return JSON.parse(localStorage.getItem(MFLOW_CACHE_KEY) || '{}'); }
+  catch(e) { return {}; }
+}
+function setMFlowCache(c) { localStorage.setItem(MFLOW_CACHE_KEY, JSON.stringify(c)); }
+
+// 股票代码 → 东财 secid (market.code)
+function stockToSecid(code) {
+  if (!code) return '';
+  code = String(code).trim();
+  // 沪市: 6开头(主板) / 688开头(科创板) / 5开头(沪市ETF/债券)
+  if (code.startsWith('6') || code.startsWith('5')) return '1.' + code;
+  // 深市: 0/3开头(主板/创业板) / 1开头(深市ETF)
+  // 北交所: 8/4开头
+  return '0.' + code;
+}
+
+// 批量查询股票主力资金净流入（JSONP，按 secids 顺序返回）
+function fetchStockMoneyFlow(stockCodes) {
+  return new Promise((resolve) => {
+    if (!stockCodes || stockCodes.length === 0) { resolve({}); return; }
+    const secids = stockCodes.map(stockToSecid).filter(Boolean);
+    if (secids.length === 0) { resolve({}); return; }
+    const cbName = '_mfcb_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
+    let done = false;
+
+    function finish(result) {
+      if (done) return;
+      done = true;
+      delete window[cbName];
+      try { document.head.removeChild(script); } catch(e) {}
+      clearTimeout(timer);
+      resolve(result);
+    }
+
+    window[cbName] = function(data) {
+      const result = {};
+      if (data && data.data && data.data.diff) {
+        data.data.diff.forEach((item, i) => {
+          if (i < stockCodes.length) {
+            result[stockCodes[i]] = item.f62; // 主力净流入额（元，正=流入 负=流出）
+          }
+        });
+      }
+      finish(result);
+    };
+
+    const script = document.createElement('script');
+    script.src = `https://push2.eastmoney.com/api/qt/ulist.np/get?fields=f62&secids=${secids.join(',')}&cb=${cbName}`;
+    script.onerror = () => finish({});
+    const timer = setTimeout(() => finish({}), 10000);
+    document.head.appendChild(script);
+  });
+}
+
+// 获取某基金的主力资金动向（优先缓存）
+function getFundMoneyFlow(code) {
+  return getMFlowCache()[code] || null;
+}
+
+// 批量获取所有基金重仓股的主力资金动向并汇总
+async function fetchAllMoneyFlow() {
+  const funds = getActiveFunds();
+  const cache = getMFlowCache();
+  const now = Date.now();
+
+  // 收集所有基金重仓股代码（去重）
+  const allStockCodes = new Set();
+  const fundStockMap = {};
+  funds.forEach(f => {
+    const h = getFundHoldings(f.code);
+    if (h && h.stocks && h.stocks.length > 0) {
+      const codes = h.stocks.map(s => s.code).filter(Boolean);
+      fundStockMap[f.code] = codes;
+      codes.forEach(c => allStockCodes.add(c));
+    }
+  });
+
+  const stockList = [...allStockCodes];
+  if (stockList.length === 0) {
+    console.log('[MoneyFlow] 无重仓股数据，跳过');
+    return;
+  }
+  console.log(`[MoneyFlow] 查询 ${stockList.length} 只股票主力资金流向`);
+
+  // 分批查询（每批最多80只）
+  const BATCH = 80;
+  const flowData = {};
+  for (let i = 0; i < stockList.length; i += BATCH) {
+    const batch = stockList.slice(i, i + BATCH);
+    const result = await fetchStockMoneyFlow(batch);
+    Object.assign(flowData, result);
+    if (i + BATCH < stockList.length) await sleep(150);
+  }
+
+  // 汇总每只基金的主力资金净流入
+  funds.forEach(f => {
+    const stockCodes = fundStockMap[f.code];
+    if (!stockCodes) return;
+    let totalFlow = 0;
+    let stockFlows = [];
+    let hasData = false;
+    stockCodes.forEach(code => {
+      const flow = flowData[code];
+      if (flow != null && !isNaN(flow)) {
+        totalFlow += flow;
+        stockFlows.push({ code, flow });
+        hasData = true;
+      }
+    });
+    if (hasData) {
+      cache[f.code] = { totalFlow, stocks: stockFlows, fetchTime: now };
+    }
+  });
+
+  setMFlowCache(cache);
+  console.log('[MoneyFlow] 主力资金动向数据已更新');
+  renderTable();
+}
+
+// 格式化资金流向金额（元 → 万/亿）
+function fmtFlow(v) {
+  if (v == null || isNaN(v)) return '—';
+  const abs = Math.abs(v);
+  if (abs >= 1e8) return (v / 1e8).toFixed(2) + '亿';
+  if (abs >= 1e4) return (v / 1e4).toFixed(0) + '万';
+  return v.toFixed(0);
+}
+
+// 获取基金主力资金净流入总额
+function getFundMoneyFlowTotal(code) {
+  const mf = getFundMoneyFlow(code);
+  return mf ? mf.totalFlow : null;
+}
+
+// ==================== 科创50指数（实时点位 + MA5/MA10） ====================
+const STAR50_SECID = '1.000688';
+let star50Data = null;
+let _star50Timer = null;
+
+// JSONP 辅助：加载 script 并回调
+function jsonpLoad(url, cbName, timeout = 10000) {
+  return new Promise((resolve) => {
+    let done = false;
+    function finish(data) {
+      if (done) return;
+      done = true;
+      delete window[cbName];
+      try { document.head.removeChild(script); } catch(e) {}
+      clearTimeout(timer);
+      resolve(data);
+    }
+    window[cbName] = (data) => finish(data);
+    const script = document.createElement('script');
+    script.src = url;
+    script.onerror = () => finish(null);
+    const timer = setTimeout(() => finish(null), timeout);
+    document.head.appendChild(script);
+  });
+}
+
+// 获取科创50指数实时数据 + K线均线
+async function fetchStar50Data() {
+  const cb1 = '_star50rt_' + Date.now();
+  const cb2 = '_star50kl_' + (Date.now() + 1);
+  try {
+    // 1. 实时数据
+    const rt = await jsonpLoad(
+      `https://push2.eastmoney.com/api/qt/stock/get?secid=${STAR50_SECID}&fields=f43,f58,f170,f169,f60&cb=${cb1}`,
+      cb1
+    );
+    if (!rt || !rt.data) return null;
+
+    // 2. 日K线（最近15天收盘价，算 MA5/MA10）
+    const kl = await jsonpLoad(
+      `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${STAR50_SECID}&klt=101&fqt=0&end=20500101&lmt=15&fields1=f1,f2,f3&fields2=f51,f53&cb=${cb2}`,
+      cb2
+    );
+
+    const d = rt.data;
+    const price = d.f43 / 100;     // 点位（东财返回值需除以100）
+    const pct = d.f170 / 100;       // 涨跌幅 %
+    const chg = d.f169 / 100;      // 涨跌额
+    const prevClose = d.f60 / 100; // 昨收
+
+    let ma5 = null, ma10 = null;
+    if (kl && kl.data && kl.data.klines) {
+      const closes = kl.data.klines.map(k => {
+        const parts = k.split(',');
+        return parseFloat(parts[1]); // f53=收盘价
+      }).filter(v => !isNaN(v));
+      if (closes.length >= 5) ma5 = closes.slice(-5).reduce((a, b) => a + b, 0) / 5;
+      if (closes.length >= 10) ma10 = closes.slice(-10).reduce((a, b) => a + b, 0) / 10;
+    }
+    return { price, pct, chg, prevClose, ma5, ma10, time: new Date().toLocaleTimeString('zh-CN', {timeZone:'Asia/Shanghai'}) };
+  } catch(e) {
+    console.error('[Star50] 获取失败:', e);
+    return null;
+  }
+}
+
+async function loadStar50() {
+  star50Data = await fetchStar50Data();
+  if (star50Data) {
+    console.log(`[Star50] 科创50: ${star50Data.price} (${star50Data.pct >= 0 ? '+' : ''}${star50Data.pct}%) MA5:${star50Data.ma5} MA10:${star50Data.ma10}`);
+    renderCards();
+  }
+}
+
 // 推断基金投资方向（基于基金名称关键词）
 function inferFundDirection(fundName, holdings) {
   const name = fundName || '';
@@ -2903,6 +3116,76 @@ function showHoldingsDialog(code, fundName) {
   document.body.appendChild(overlay);
 }
 
+// 主力资金动向明细弹窗
+function showMoneyFlowDialog(code, fundName) {
+  const mfData = getFundMoneyFlow(code);
+  const holdings = getFundHoldings(code);
+  if (!holdings || !holdings.stocks || holdings.stocks.length === 0) {
+    toast('暂无重仓股数据', '');
+    return;
+  }
+  // 合并重仓股占比和资金流向
+  const flowMap = {};
+  if (mfData && mfData.stocks) mfData.stocks.forEach(s => { flowMap[s.code] = s.flow; });
+  const stocks = holdings.stocks.map(s => ({
+    code: s.code, name: s.name, pct: s.pct,
+    flow: flowMap[s.code] != null ? flowMap[s.code] : null
+  })).sort((a, b) => {
+    if (a.flow == null && b.flow == null) return 0;
+    if (a.flow == null) return 1;
+    if (b.flow == null) return -1;
+    return b.flow - a.flow; // 净流入大的排前面
+  });
+  const totalFlow = mfData ? mfData.totalFlow : null;
+  const rowsHtml = stocks.map((s, i) => {
+    const flowHtml = s.flow != null
+      ? `<span style="color:${s.flow>=0?'var(--red)':'var(--green)'};font-weight:600">${s.flow>=0?'+':''}${fmtFlow(s.flow)}</span>`
+      : '<span style="color:var(--muted)">—</span>';
+    return `<tr>
+      <td style="text-align:center;color:var(--muted);padding:5px 8px">${i+1}</td>
+      <td style="padding:5px 8px"><span style="font-family:monospace;color:var(--muted);font-size:11px">${s.code}</span></td>
+      <td style="padding:5px 8px;font-weight:500">${s.name}</td>
+      <td style="padding:5px 8px;text-align:right">${s.pct.toFixed(2)}%</td>
+      <td style="padding:5px 8px;text-align:right">${flowHtml}</td>
+    </tr>`;
+  }).join('');
+  const totalHtml = totalFlow != null
+    ? `<span style="color:${totalFlow>=0?'var(--red)':'var(--green)'};font-weight:700;font-size:16px">${totalFlow>=0?'+':''}${fmtFlow(totalFlow)}</span>`
+    : '<span style="color:var(--muted)">暂无数据</span>';
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'mfDlgOverlay';
+  overlay.onclick = (e) => { if (e.target === overlay) closeModal('mfDlgOverlay'); };
+  overlay.innerHTML = `
+    <div class="modal-box" style="width:540px;max-width:94vw">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+        <h3 class="modal-title" style="margin:0">${fundName} · 主力资金动向</h3>
+        <span style="cursor:pointer;color:var(--muted);font-size:18px" onclick="closeModal('mfDlgOverlay')">✕</span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px">
+        <span style="font-size:12px;color:var(--muted)">前${stocks.length}大重仓股主力净流入合计</span>
+        <span style="margin-left:auto">${totalHtml}</span>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border)">
+            <th style="text-align:center;padding:5px 8px;color:var(--muted);font-weight:400;font-size:11px">#</th>
+            <th style="text-align:left;padding:5px 8px;color:var(--muted);font-weight:400;font-size:11px">代码</th>
+            <th style="text-align:left;padding:5px 8px;color:var(--muted);font-weight:400;font-size:11px">股票</th>
+            <th style="text-align:right;padding:5px 8px;color:var(--muted);font-weight:400;font-size:11px">占比</th>
+            <th style="text-align:right;padding:5px 8px;color:var(--muted);font-weight:400;font-size:11px">主力净流入</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+      <div style="margin-top:12px;font-size:11px;color:var(--muted);text-align:center">
+        数据来源：东方财富 · 盘中实时（5分钟刷新），红色=净流入 绿色=净流出
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+}
+
 // ---- 实时估算: 并行批量获取 ----
 // fundgz.1234567.com.cn 固定回调名 jsonpgz
 // 通过全局回调 + fundcode 路由实现并行获取（每批6只）
@@ -2987,6 +3270,7 @@ function getSortedFunds() {
       case 'mark': return getFundMark(f.code) || '';
       case 'code': return f.code;
       case 'dir': return inferFundDirection(f.name, getFundHoldings(f.code));
+      case 'mflow': return getFundMoneyFlowTotal(f.code) ?? null;
       case 'ret': {
         const dynRet = calcRet(f);
         return dynRet !== null ? dynRet : (f.sumR || 0);
@@ -3144,8 +3428,29 @@ function renderCards() {
 
   const startLabel = STAT_START_ISO === '2026-04-27' ? '4/27' : STAT_START_ISO.substring(5).replace('-', '/');
 
+  // 科创50指数卡片（实时点位 + MA5/MA10）
+  const star50Html = star50Data ? `
+    <div class="card" style="border-color:rgba(88,166,255,0.3);background:rgba(88,166,255,0.04)">
+      <div class="card-label">🔬 科创50指数</div>
+      <div class="card-val" style="color:${star50Data.pct>=0?'var(--red)':'var(--green)'}">
+        ${star50Data.price.toFixed(2)}
+        <span style="font-size:13px;font-weight:600">${star50Data.pct>=0?'+':''}${star50Data.pct.toFixed(2)}%</span>
+      </div>
+      <div class="card-sub" style="font-size:11px">
+        MA5: <span style="color:${star50Data.ma5!=null&&star50Data.price>=star50Data.ma5?'var(--red)':'var(--green)'};font-weight:600">${star50Data.ma5?star50Data.ma5.toFixed(2):'—'}</span>
+        <span style="margin:0 4px;color:var(--muted)">|</span>
+        MA10: <span style="color:${star50Data.ma10!=null&&star50Data.price>=star50Data.ma10?'var(--red)':'var(--green)'};font-weight:600">${star50Data.ma10?star50Data.ma10.toFixed(2):'—'}</span>
+      </div>
+    </div>` : `
+    <div class="card" style="border-color:rgba(88,166,255,0.3);background:rgba(88,166,255,0.04)">
+      <div class="card-label">🔬 科创50指数</div>
+      <div class="card-val" style="color:var(--muted);font-size:14px">加载中...</div>
+      <div class="card-sub">MA5: — | MA10: —</div>
+    </div>`;
+
   document.getElementById('cards').innerHTML = `
     ${todayRateHtml}
+    ${star50Html}
     <div class="card">
       <div class="card-label">持仓总金额${isAccountView ? ' · '+accName : ''}</div>
       <div class="card-val" style="color:var(--blue)">${totalAmount > 0 ? '¥' + totalAmount.toLocaleString('zh-CN') : '—'}</div>
@@ -3186,9 +3491,9 @@ function renderCards() {
   // 当账户视图时，卡片行调整为多列（含收益率卡片）
   const cardsEl = document.getElementById('cards');
   if (isAccountView) {
-    cardsEl.style.gridTemplateColumns = 'repeat(6, 1fr)';
+    cardsEl.style.gridTemplateColumns = 'repeat(7, 1fr)';
   } else {
-    cardsEl.style.gridTemplateColumns = 'repeat(5, 1fr)';
+    cardsEl.style.gridTemplateColumns = 'repeat(6, 1fr)';
   }
 }
 
@@ -3208,6 +3513,7 @@ function renderTable() {
     <th class="name-col fixed-th ${sortCls('name')}" style="width:180px;min-width:180px;max-width:180px;white-space:normal;word-break:break-word;overflow-wrap:break-word" onclick="setSort('name')">基金名称</th>
     <th class="${sortCls('mark')}" style="min-width:70px" onclick="setSort('mark')" title="点击设置标记">标记</th>
     <th class="${sortCls('dir')}" style="width:400px;min-width:400px;max-width:400px;white-space:normal;word-break:break-word;overflow-wrap:break-word" onclick="setSort('dir')" title="投资方向+前10大重仓股，点击查看详情">方向与重仓</th>
+    <th class="${sortCls('mflow')}" style="min-width:76px" onclick="setSort('mflow')" title="重仓股主力资金净流入合计（盘中实时，5分钟刷新）">主力<br>资金</th>
     <th class="${sortCls('ret')}" style="min-width:76px" onclick="setSort('ret')">总收益率</th>
     <th class="model-col ${sortCls('sharpe')}" style="min-width:64px" onclick="setSort('sharpe')" title="(年化收益−Rf)/年化波动率，>1优秀">夏普<div class="model-sub">比率</div></th>
     <th class="model-col ${sortCls('maxdd')}" style="min-width:64px" onclick="setSort('maxdd')" title="区间最大净值回撤，越小越稳">最大<div class="model-sub">回撤</div></th>
@@ -3346,6 +3652,18 @@ function renderTable() {
       </div>`;
     }
     
+    // 主力资金动向（重仓股主力净流入合计）
+    const mfData = getFundMoneyFlow(f.code);
+    const mfTotal = mfData ? mfData.totalFlow : null;
+    let mflowHtml;
+    if (mfTotal != null) {
+      const mfColor = mfTotal >= 0 ? 'var(--red)' : 'var(--green)';
+      const mfSign = mfTotal >= 0 ? '+' : '';
+      mflowHtml = `<span style="color:${mfColor};font-weight:600;font-size:12px;cursor:help" title="重仓股主力资金净流入合计，点击查看明细" onclick="showMoneyFlowDialog('${f.code}','${f.name.replace(/'/g,'\\\'')}')">${mfSign}${fmtFlow(mfTotal)}</span>`;
+    } else {
+      mflowHtml = '<span style="color:var(--muted);font-size:11px">—</span>';
+    }
+    
     const dailyCells = displayDates.map(d => {
       const nd = normDate(d);
       const isToday = nd === normDate(today);
@@ -3376,6 +3694,7 @@ function renderTable() {
       </td>
       <td style="text-align:center"><span class="mark-cell" style="cursor:pointer;display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;white-space:nowrap;${(() => { const mk = getFundMark(f.code); return mk ? `background:${markBg(mk)};color:${markColor(mk)};font-weight:600` : 'color:var(--muted);opacity:0.5' })()}" onclick="showMarkDialog('${f.code}','${f.name.replace(/'/g,'\\\'')}')" title="点击设置标记">${getFundMark(f.code) || '＋'}</span></td>
       <td style="width:400px;min-width:400px;max-width:400px;overflow:hidden;white-space:normal;word-break:break-word;overflow-wrap:break-word">${dirHoldingsHtml}</td>
+      <td style="text-align:right">${mflowHtml}</td>
       <td><span class="${retCls}" id="ret_${f.code}" ${navTip}>${retSign}${retVal.toFixed(2)}%</span></td>
       <td>${sharpeHtml}</td>
       <td>${maxddHtml}</td>
@@ -3404,7 +3723,7 @@ function renderTable() {
 
 // 排序切换函数
 const SORT_LABELS = {
-  'name': '基金名称', 'mark': '标记', 'code': '代码', 'dir': '方向与重仓', 'ret': '总收益率', 'sharpe': '夏普比率',
+  'name': '基金名称', 'mark': '标记', 'code': '代码', 'dir': '方向与重仓', 'mflow': '主力资金', 'ret': '总收益率', 'sharpe': '夏普比率',
   'maxdd': '最大回撤', 'recovery': '修复天数', 'vol': '年化波动率', 'winrate': '胜率',
   'score': '总评分', 'amount': '持仓金额',
   'buy': '收益能力', 'def': '防守能力',
@@ -3821,6 +4140,8 @@ function startAutoRefresh() {
     if (isTradingTime()) {
       console.log('[AutoRefresh] 交易时间自动刷新...');
       fetchTodayData();
+      fetchAllMoneyFlow(); // 刷新主力资金动向
+      loadStar50();         // 刷新科创50指数
     }
   }, 5 * 60 * 1000); // 每5分钟
 }
@@ -3875,11 +4196,17 @@ async function init() {
       }
     }, 300);
     // 异步抓取重仓股数据（不阻塞主流程）
-    setTimeout(() => {
-      try { fetchAllHoldings(); } catch(e) {
+    setTimeout(async () => {
+      try {
+        await fetchAllHoldings();
+        // 重仓股数据就绪后，获取主力资金动向
+        setTimeout(() => { try { fetchAllMoneyFlow(); } catch(e) { console.error('[init] fetchAllMoneyFlow 出错:', e); } }, 1000);
+      } catch(e) {
         console.error('[init] fetchAllHoldings 出错:', e);
       }
     }, 2000);
+    // 获取科创50指数数据（实时点位 + MA5/MA10）
+    setTimeout(() => { try { loadStar50(); } catch(e) { console.error('[init] loadStar50 出错:', e); } }, 800);
   }, 500);
 
   // 启动交易时间自动刷新
