@@ -3356,6 +3356,49 @@ function buildDisplayDates() {
   displayDates.sort((a,b) => parseMD(b)-parseMD(a));
 }
 
+// ==================== 轮动机会卡片：非科技板块近1周表现优选 ====================
+
+// 计算某基金近N个交易日的累计收益率（复利）
+function calcPeriodReturn(code, days) {
+  const cache = getCache();
+  // 取最近N个交易日的涨跌幅（displayDates 已按降序排列，[0]为最新）
+  const recentDates = displayDates.filter(d => {
+    const v = cache[cacheKey(code, d)];
+    return v != null && !isNaN(v);
+  }).slice(0, days);
+  if (recentDates.length === 0) return null;
+  // 复利累计: (1+r1)(1+r2)...(1+rn) - 1
+  let cum = 1;
+  recentDates.forEach(d => {
+    const v = cache[cacheKey(code, d)];
+    cum *= (1 + v / 100);
+  });
+  return (cum - 1) * 100;
+}
+
+// 科技相关方向（受科技股重创影响）
+const TECH_DIRS = ['通信', '电子', '半导体', '人工智能', '科技'];
+
+function isTechFund(fundName, code) {
+  const dir = inferFundDirection(fundName, getFundHoldings(code));
+  return TECH_DIRS.includes(dir);
+}
+
+// 获取轮动机会基金：非科技板块，按近1周收益排序
+function getOpportunityFunds(topN) {
+  const funds = getActiveFunds();
+  const results = [];
+  funds.forEach(f => {
+    if (isTechFund(f.name, f.code)) return; // 跳过科技类
+    const weekRet = calcPeriodReturn(f.code, 5);
+    if (weekRet == null) return;
+    const dir = inferFundDirection(f.name, getFundHoldings(f.code));
+    results.push({ code: f.code, name: f.name, weekRet, dir });
+  });
+  results.sort((a, b) => b.weekRet - a.weekRet);
+  return results.slice(0, topN || 5);
+}
+
 function renderCards() {
   const today = todayKey();
   const cache = getCache();
@@ -3448,9 +3491,38 @@ function renderCards() {
       <div class="card-sub">MA5: — | MA10: —</div>
     </div>`;
 
+  // 轮动机会卡片：非科技板块近1周表现优选
+  const oppFunds = getOpportunityFunds(5);
+  // 计算科技板块平均1周收益（用于对比）
+  const techFunds = getActiveFunds().filter(f => isTechFund(f.name, f.code));
+  const techReturns = techFunds.map(f => calcPeriodReturn(f.code, 5)).filter(v => v != null);
+  const techAvg = techReturns.length > 0 ? techReturns.reduce((a,b) => a+b, 0) / techReturns.length : null;
+
+  const oppListHtml = oppFunds.map(x => {
+    const retColor = x.weekRet >= 0 ? 'var(--red)' : 'var(--green)';
+    const retSign = x.weekRet >= 0 ? '+' : '';
+    const dirTag = x.dir !== '混合' && x.dir !== '股票' && x.dir !== '综合'
+      ? `<span style="font-size:9px;background:rgba(63,185,80,0.15);color:#3fb550;padding:0 3px;border-radius:2px;margin-left:3px">${x.dir}</span>`
+      : '';
+    return `<div style="display:flex;justify-content:space-between;align-items:center;padding:1px 0;font-size:11px;cursor:pointer" onclick="scrollToFund('${x.code}')">
+      <span style="color:var(--text);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${x.name.length > 10 ? x.name.substring(0,10)+'…' : x.name}${dirTag}</span>
+      <span style="color:${retColor};font-weight:600">${retSign}${x.weekRet.toFixed(2)}%</span>
+    </div>`;
+  }).join('');
+
+  const oppCardHtml = `
+    <div class="card" style="border-color:rgba(63,185,80,0.3);background:rgba(63,185,80,0.04)">
+      <div class="card-label">💡 轮动机会 <span style="font-size:9px;color:var(--muted)">非科技·近1周</span></div>
+      <div class="card-val" style="font-size:12px;line-height:1.4">
+        ${oppFunds.length > 0 ? oppListHtml : '<span style="color:var(--muted)">暂无数据</span>'}
+      </div>
+      ${techAvg != null ? `<div class="card-sub" style="font-size:10px">科技板块均值 <span style="color:${techAvg>=0?'var(--red)':'var(--green)'};font-weight:600">${techAvg>=0?'+':''}${techAvg.toFixed(2)}%</span></div>` : ''}
+    </div>`;
+
   document.getElementById('cards').innerHTML = `
     ${todayRateHtml}
     ${star50Html}
+    ${oppCardHtml}
     <div class="card">
       <div class="card-label">持仓总金额${isAccountView ? ' · '+accName : ''}</div>
       <div class="card-val" style="color:var(--blue)">${totalAmount > 0 ? '¥' + totalAmount.toLocaleString('zh-CN') : '—'}</div>
@@ -3490,10 +3562,26 @@ function renderCards() {
 
   // 当账户视图时，卡片行调整为多列（含收益率卡片）
   const cardsEl = document.getElementById('cards');
-  if (isAccountView) {
-    cardsEl.style.gridTemplateColumns = 'repeat(7, 1fr)';
+  const isMobile = window.innerWidth <= 767;
+  if (isMobile) {
+    cardsEl.style.gridTemplateColumns = 'repeat(2, 1fr)';
+  } else if (isAccountView) {
+    cardsEl.style.gridTemplateColumns = 'repeat(8, 1fr)';
   } else {
-    cardsEl.style.gridTemplateColumns = 'repeat(6, 1fr)';
+    cardsEl.style.gridTemplateColumns = 'repeat(7, 1fr)';
+  }
+}
+
+// 滚动到表格中某基金行并高亮
+function scrollToFund(code) {
+  const row = document.querySelector(`tr[data-code="${code}"]`);
+  if (row) {
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    row.style.transition = 'background 0.3s';
+    row.style.background = 'rgba(63,185,80,0.15)';
+    setTimeout(() => { row.style.background = ''; }, 2000);
+  } else {
+    toast('该基金不在当前列表中', '');
   }
 }
 
@@ -3682,7 +3770,7 @@ function renderTable() {
       return `<td${isToday?' class="today-td"':''}>${inner}</td>`;
     }).join('');
     
-    return `<tr>
+    return `<tr data-code="${f.code}">
       <td class="name-col" style="width:180px;min-width:180px;max-width:180px;white-space:normal;word-break:break-word;overflow-wrap:break-word">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:4px">
           <div style="min-width:0;overflow:hidden;word-break:break-word">
